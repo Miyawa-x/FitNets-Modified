@@ -11,8 +11,8 @@ import torch.nn.functional as F
 
 from torch_fitnets.data import build_dataloaders
 from torch_fitnets.losses import accuracy
-from torch_fitnets.models import build_model
-from torch_fitnets.optim import build_optimizer
+from torch_fitnets.models import apply_fitnet_constraints, build_model
+from torch_fitnets.optim import build_optimizer, scaled_param_groups
 
 
 class Meter:
@@ -125,6 +125,7 @@ def run_epoch(
             else:
                 loss.backward()
                 optimizer.step()
+            apply_fitnet_constraints(model)
 
         batch = targets.size(0)
         loss_meter.update(float(loss.detach()), batch)
@@ -162,7 +163,7 @@ def main() -> None:
     ).to(device)
 
     optimizer = build_optimizer(
-        model.parameters(),
+        scaled_param_groups([model], args.lr, args.weight_decay),
         args.optimizer,
         lr=args.lr,
         momentum=args.momentum,

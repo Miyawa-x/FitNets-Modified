@@ -1,8 +1,38 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 import torch
+from torch import nn
+
+
+def scaled_param_groups(
+    modules: Iterable[nn.Module],
+    base_lr: float,
+    weight_decay: float | None = None,
+) -> list[dict[str, Any]]:
+    """Build param groups that honor FitNet per-layer lr scales."""
+    groups: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for root in modules:
+        for module in root.modules():
+            params = []
+            for param in module.parameters(recurse=False):
+                if id(param) in seen:
+                    continue
+                seen.add(id(param))
+                params.append(param)
+            if not params:
+                continue
+            group: dict[str, Any] = {
+                "params": params,
+                "lr": base_lr * float(getattr(module, "fitnet_lr_scale", 1.0)),
+            }
+            if weight_decay is not None:
+                group["weight_decay"] = weight_decay
+            groups.append(group)
+    return groups
 
 
 def build_optimizer(

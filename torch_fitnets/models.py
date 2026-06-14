@@ -27,6 +27,8 @@ class MaxoutConvBlock(nn.Module):
         pool_shape: tuple[int, int] = (1, 1),
         pool_stride: tuple[int, int] = (1, 1),
         irange: float = 0.005,
+        lr_scale: float = 0.05,
+        max_kernel_norm: float = 0.9,
     ) -> None:
         super().__init__()
         self.num_channels = num_channels
@@ -39,6 +41,8 @@ class MaxoutConvBlock(nn.Module):
             bias=True,
         )
         _init_uniform(self.conv, irange)
+        self.conv.fitnet_lr_scale = lr_scale
+        self.conv.fitnet_max_kernel_norm = max_kernel_norm
 
         if pool_shape == (1, 1) and pool_stride == (1, 1):
             self.pool = nn.Identity()
@@ -60,12 +64,14 @@ class MaxoutLinear(nn.Module):
         num_units: int,
         num_pieces: int,
         irange: float = 0.005,
+        max_col_norm: float = 1.9,
     ) -> None:
         super().__init__()
         self.num_units = num_units
         self.num_pieces = num_pieces
         self.linear = nn.Linear(in_features, num_units * num_pieces)
         _init_uniform(self.linear, irange)
+        self.linear.fitnet_max_col_norm = max_col_norm
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.linear(x)
@@ -128,12 +134,14 @@ class FitNetCNN(nn.Module):
         if spec.fc_units is None:
             self.classifier = nn.Linear(flat_dim, num_classes)
             _init_uniform(self.classifier, irange)
+            self.classifier.fitnet_max_col_norm = 1.9365
         else:
             self.classifier = nn.Sequential(
                 MaxoutLinear(flat_dim, spec.fc_units, spec.fc_pieces, irange=irange),
                 nn.Linear(spec.fc_units, num_classes),
             )
             _init_uniform(self.classifier[-1], irange)
+            self.classifier[-1].fitnet_max_col_norm = 1.9365
 
     @property
     def num_feature_layers(self) -> int:
@@ -345,3 +353,26 @@ def build_model(
 
 def default_middle_index(arch: str) -> int:
     return MODEL_SPECS[arch].default_middle
+
+
+def _renorm_rows_(weight: torch.Tensor, max_norm: float) -> None:
+    rows = weight.view(weight.shape[0], -1)
+    norms = rows.norm(p=2, dim=1, keepdim=True).clamp_min(1e-12)
+    scale = torch.clamp(max_norm / norms, max=1.0)
+    rows.mul_(scale)
+
+
+@torch.no_grad()
+def apply_fitnet_constraints(model: nn.Module) -> None:
+    """Apply the max-norm constraints used by the original FitNet YAML."""
+    for module in model.modules():
+        weight = getattr(module, "weight", None)
+        if weight is None:
+            continue
+        max_kernel_norm = getattr(module, "fitnet_max_kernel_norm", None)
+        if max_kernel_norm is not None:
+            _renorm_rows_(weight, float(max_kernel_norm))
+            continue
+        max_col_norm = getattr(module, "fitnet_max_col_norm", None)
+        if max_col_norm is not None:
+            _renorm_rows_(weight, float(max_col_norm))

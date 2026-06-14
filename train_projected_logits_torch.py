@@ -17,12 +17,10 @@ from torch_fitnets.engine import (
     run_stage1_epoch,
     run_stage2_epoch,
     set_student_stage1_trainable,
-    student_front_parameters,
-    student_tail_parameters,
     unfreeze,
 )
 from torch_fitnets.models import build_model, default_middle_index
-from torch_fitnets.optim import build_optimizer
+from torch_fitnets.optim import build_optimizer, scaled_param_groups
 from torch_fitnets.projectors import GlobalAverageProjection
 
 
@@ -359,18 +357,20 @@ def main() -> None:
 
     if args.stage1_epochs > 0:
         print("Stage 1: train student front and student projection")
+        stage1_param_groups = scaled_param_groups(
+            student.blocks[: student_mid_index + 1],
+            args.lr_stage1_front,
+            args.weight_decay,
+        )
+        stage1_param_groups.append(
+            {
+                "params": student_proj.parameters(),
+                "lr": args.lr_stage1_proj,
+                "weight_decay": args.proj_weight_decay,
+            }
+        )
         optimizer = build_optimizer(
-            [
-                {
-                    "params": student_front_parameters(student, student_mid_index),
-                    "lr": args.lr_stage1_front,
-                },
-                {
-                    "params": student_proj.parameters(),
-                    "lr": args.lr_stage1_proj,
-                    "weight_decay": args.proj_weight_decay,
-                },
-            ],
+            stage1_param_groups,
             args.optimizer,
             lr=args.lr_stage1_front,
             momentum=args.momentum,
@@ -437,17 +437,20 @@ def main() -> None:
 
     if args.stage2_epochs > 0:
         print("Stage 2: train full student with CE + final KD")
+        stage2_param_groups = scaled_param_groups(
+            student.blocks[: student_mid_index + 1],
+            args.lr_stage2 * args.stage2_front_lr_scale,
+            args.weight_decay,
+        )
+        stage2_param_groups.extend(
+            scaled_param_groups(
+                list(student.blocks[student_mid_index + 1 :]) + [student.classifier],
+                args.lr_stage2,
+                args.weight_decay,
+            )
+        )
         optimizer = build_optimizer(
-            [
-                {
-                    "params": student_front_parameters(student, student_mid_index),
-                    "lr": args.lr_stage2 * args.stage2_front_lr_scale,
-                },
-                {
-                    "params": student_tail_parameters(student, student_mid_index),
-                    "lr": args.lr_stage2,
-                },
-            ],
+            stage2_param_groups,
             args.optimizer,
             lr=args.lr_stage2,
             momentum=args.momentum,

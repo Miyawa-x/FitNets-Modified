@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from .losses import accuracy, kd_kl_loss, logits_entropy, logits_std
+from .models import apply_fitnet_constraints
 
 
 @dataclass
@@ -228,6 +229,7 @@ def run_stage1_epoch(
 
         if training:
             _backward_step(loss, optimizer, scaler)
+            apply_fitnet_constraints(student)
 
         _update_projection_stats(
             stats,
@@ -288,6 +290,7 @@ def run_stage2_epoch(
 
         if training:
             _backward_step(loss, optimizer, scaler)
+            apply_fitnet_constraints(student)
 
         _update_projection_stats(
             stats,
