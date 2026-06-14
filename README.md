@@ -19,6 +19,22 @@ PyTorch projected-logit migration
 The original code is a legacy Python 2 / pylearn2 / Theano implementation.
 For Python 3 and NVIDIA GPUs, use the PyTorch migration entry point:
 
+First train a CIFAR-100 teacher:
+
+```
+python train_teacher_torch.py \
+  --dataset cifar100 \
+  --download \
+  --output checkpoints/cifar100_teacher.pt \
+  --epochs 200 \
+  --batch-size 128 \
+  --num-workers 4 \
+  --device cuda \
+  --amp
+```
+
+Then run projected-logit FitNets:
+
 ```
 python train_projected_logits_torch.py \
   --dataset cifar100 \
