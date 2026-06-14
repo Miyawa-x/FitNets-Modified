@@ -12,6 +12,7 @@ import torch.nn.functional as F
 from torch_fitnets.data import build_dataloaders
 from torch_fitnets.losses import accuracy
 from torch_fitnets.models import build_model
+from torch_fitnets.optim import build_optimizer
 
 
 class Meter:
@@ -43,11 +44,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--epochs", type=int, default=200)
-    parser.add_argument("--lr", type=float, default=0.1)
-    parser.add_argument("--momentum", type=float, default=0.9)
+    parser.add_argument("--epochs", type=int, default=288)
+    parser.add_argument("--lr", type=float, default=0.005)
+    parser.add_argument("--optimizer", default="rmsprop", choices=["rmsprop", "sgd"])
+    parser.add_argument("--rmsprop-alpha", type=float, default=0.9)
+    parser.add_argument("--momentum", type=float, default=0.0)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
-    parser.add_argument("--milestones", type=int, nargs="*", default=[100, 150])
+    parser.add_argument("--milestones", type=int, nargs="*", default=[])
     parser.add_argument("--gamma", type=float, default=0.1)
     parser.add_argument("--amp", action="store_true")
     return parser.parse_args()
@@ -155,13 +158,16 @@ def main() -> None:
         arch,
         input_channels=dataset_info.input_channels,
         num_classes=dataset_info.num_classes,
+        image_size=dataset_info.image_size,
     ).to(device)
 
-    optimizer = torch.optim.SGD(
+    optimizer = build_optimizer(
         model.parameters(),
+        args.optimizer,
         lr=args.lr,
         momentum=args.momentum,
         weight_decay=args.weight_decay,
+        rmsprop_alpha=args.rmsprop_alpha,
     )
     scheduler = torch.optim.lr_scheduler.MultiStepLR(
         optimizer,

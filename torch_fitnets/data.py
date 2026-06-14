@@ -53,7 +53,7 @@ def build_dataloaders(
         mean, std = CIFAR_NORMALIZATION[dataset]
         train_transform = transforms.Compose(
             [
-                transforms.RandomCrop(32, padding=4),
+                transforms.RandomCrop(32, padding=8),
                 transforms.RandomHorizontalFlip(),
                 transforms.ToTensor(),
                 transforms.Normalize(mean, std),

@@ -22,6 +22,7 @@ from torch_fitnets.engine import (
     unfreeze,
 )
 from torch_fitnets.models import build_model, default_middle_index
+from torch_fitnets.optim import build_optimizer
 from torch_fitnets.projectors import GlobalAverageProjection
 
 
@@ -62,23 +63,25 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--stage0-epochs", type=int, default=20)
     parser.add_argument("--stage1-epochs", type=int, default=40)
-    parser.add_argument("--stage2-epochs", type=int, default=160)
+    parser.add_argument("--stage2-epochs", type=int, default=288)
 
-    parser.add_argument("--lr-stage0", type=float, default=0.01)
-    parser.add_argument("--lr-stage1-front", type=float, default=0.01)
+    parser.add_argument("--lr-stage0", type=float, default=0.005)
+    parser.add_argument("--lr-stage1-front", type=float, default=0.005)
     parser.add_argument("--lr-stage1-proj", type=float, default=0.005)
-    parser.add_argument("--lr-stage2", type=float, default=0.05)
-    parser.add_argument("--stage2-front-lr-scale", type=float, default=0.2)
-    parser.add_argument("--momentum", type=float, default=0.9)
+    parser.add_argument("--lr-stage2", type=float, default=0.005)
+    parser.add_argument("--stage2-front-lr-scale", type=float, default=1.0)
+    parser.add_argument("--optimizer", default="rmsprop", choices=["rmsprop", "sgd"])
+    parser.add_argument("--rmsprop-alpha", type=float, default=0.9)
+    parser.add_argument("--momentum", type=float, default=0.0)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--proj-weight-decay", type=float, default=1e-3)
 
     parser.add_argument("--stage1-temperature", type=float, default=2.0)
     parser.add_argument("--stage1-ce-weight", type=float, default=0.5)
     parser.add_argument("--stage1-kd-weight", type=float, default=1.0)
-    parser.add_argument("--stage2-temperature", type=float, default=4.0)
+    parser.add_argument("--stage2-temperature", type=float, default=3.0)
     parser.add_argument("--stage2-ce-weight", type=float, default=1.0)
-    parser.add_argument("--stage2-kd-weight", type=float, default=1.0)
+    parser.add_argument("--stage2-kd-weight", type=float, default=4.0)
 
     return parser.parse_args()
 
@@ -226,11 +229,13 @@ def main() -> None:
         teacher_arch,
         input_channels=dataset_info.input_channels,
         num_classes=dataset_info.num_classes,
+        image_size=dataset_info.image_size,
     ).to(device)
     student = build_model(
         student_arch,
         input_channels=dataset_info.input_channels,
         num_classes=dataset_info.num_classes,
+        image_size=dataset_info.image_size,
     ).to(device)
 
     teacher_mid_index = (
@@ -290,11 +295,13 @@ def main() -> None:
 
     if args.stage0_epochs > 0 and args.teacher_proj_ckpt is None:
         print("Stage 0: train teacher projection")
-        optimizer = torch.optim.SGD(
+        optimizer = build_optimizer(
             teacher_proj.parameters(),
+            args.optimizer,
             lr=args.lr_stage0,
             momentum=args.momentum,
             weight_decay=args.proj_weight_decay,
+            rmsprop_alpha=args.rmsprop_alpha,
         )
         best_acc = -1.0
         for epoch in range(1, args.stage0_epochs + 1):
@@ -352,7 +359,7 @@ def main() -> None:
 
     if args.stage1_epochs > 0:
         print("Stage 1: train student front and student projection")
-        optimizer = torch.optim.SGD(
+        optimizer = build_optimizer(
             [
                 {
                     "params": student_front_parameters(student, student_mid_index),
@@ -364,9 +371,11 @@ def main() -> None:
                     "weight_decay": args.proj_weight_decay,
                 },
             ],
+            args.optimizer,
             lr=args.lr_stage1_front,
             momentum=args.momentum,
             weight_decay=args.weight_decay,
+            rmsprop_alpha=args.rmsprop_alpha,
         )
         best_acc = -1.0
         for epoch in range(1, args.stage1_epochs + 1):
@@ -428,7 +437,7 @@ def main() -> None:
 
     if args.stage2_epochs > 0:
         print("Stage 2: train full student with CE + final KD")
-        optimizer = torch.optim.SGD(
+        optimizer = build_optimizer(
             [
                 {
                     "params": student_front_parameters(student, student_mid_index),
@@ -439,9 +448,11 @@ def main() -> None:
                     "lr": args.lr_stage2,
                 },
             ],
+            args.optimizer,
             lr=args.lr_stage2,
             momentum=args.momentum,
             weight_decay=args.weight_decay,
+            rmsprop_alpha=args.rmsprop_alpha,
         )
         best_acc = -1.0
         for epoch in range(1, args.stage2_epochs + 1):

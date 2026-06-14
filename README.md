@@ -26,7 +26,7 @@ python train_teacher_torch.py \
   --dataset cifar100 \
   --download \
   --output checkpoints/cifar100_teacher.pt \
-  --epochs 200 \
+  --epochs 288 \
   --batch-size 128 \
   --num-workers 4 \
   --device cuda \
@@ -43,13 +43,22 @@ python train_projected_logits_torch.py \
   --output-dir runs/cifar100_projected_fitnets \
   --stage0-epochs 20 \
   --stage1-epochs 40 \
-  --stage2-epochs 160 \
+  --stage2-epochs 288 \
   --device cuda \
   --amp
 ```
 
 The PyTorch flow implements the projected-logit design:
 
+- The CIFAR student backbone mirrors the original 19-layer Maxout FitNet
+  student in `yaml/cifar100_fitnet19_all.yaml`: Maxout convolutional layers,
+  `h4/h10/h16` pooling, a 500-unit Maxout fully connected layer, and a final
+  classifier.
+- The original repo does not include the teacher YAML, only a
+  `<path_teacher_pkl>` placeholder. The bundled PyTorch teacher is therefore a
+  wider Maxout FitNet-style teacher with the original hint index defaulting to
+  teacher layer `1`. If you have the exact original teacher architecture, add it
+  to `torch_fitnets/models.py` and pass it through `--teacher-arch`.
 - Stage 0 freezes the teacher backbone and trains `teacher_proj`, a bias-free
   `1x1` projection plus global average pooling from teacher middle features to
   class logits, using true-label CE.
