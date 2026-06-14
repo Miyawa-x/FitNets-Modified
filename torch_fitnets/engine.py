@@ -114,6 +114,8 @@ def _update_projection_stats(
 
 def _autocast(enabled: bool):
     if enabled:
+        if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+            return torch.amp.autocast("cuda")
         return torch.cuda.amp.autocast()
     return nullcontext()
 

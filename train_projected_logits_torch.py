@@ -144,7 +144,10 @@ def load_module(
     if path is None:
         return
 
-    payload = torch.load(path, map_location=device)
+    try:
+        payload = torch.load(path, map_location=device, weights_only=True)
+    except TypeError:
+        payload = torch.load(path, map_location=device)
     state = resolve_checkpoint_state(payload, key)
 
     if any(name.startswith("module.") for name in state):
@@ -249,7 +252,10 @@ def main() -> None:
     if args.teacher_ckpt is None:
         print("warning: --teacher-ckpt was not provided; teacher starts randomly.")
 
-    scaler = torch.cuda.amp.GradScaler(enabled=args.amp and device.type == "cuda")
+    if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+        scaler = torch.amp.GradScaler("cuda", enabled=args.amp and device.type == "cuda")
+    else:
+        scaler = torch.cuda.amp.GradScaler(enabled=args.amp and device.type == "cuda")
 
     teacher_proj = GlobalAverageProjection(
         in_channels=teacher.feature_channels[teacher_mid_index],
