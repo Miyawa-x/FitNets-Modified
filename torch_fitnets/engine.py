@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .losses import accuracy, kd_kl_loss, logits_entropy, logits_std
+from .losses import accuracy, hint_mse_loss, kd_kl_loss, logits_entropy, logits_std
 from .models import apply_fitnet_constraints
 
 
@@ -21,6 +21,11 @@ class EpochStats:
     acc: float
     entropy: float
     logit_std: float
+
+
+@dataclass
+class HintEpochStats:
+    loss: float
 
 
 class Meter:
@@ -161,7 +166,8 @@ def run_stage0_epoch(
         with torch.no_grad():
             features = teacher.forward_until(inputs, middle_index)
 
-        with _autocast(scaler_enabled):
+        grad_context = torch.enable_grad() if training else torch.no_grad()
+        with grad_context, _autocast(scaler_enabled):
             logits = teacher_proj(features)
             ce_loss = F.cross_entropy(logits, targets)
             loss = ce_loss
@@ -205,7 +211,8 @@ def run_stage1_epoch(
         if training:
             optimizer.zero_grad(set_to_none=True)
 
-        with _autocast(scaler_enabled):
+        grad_context = torch.enable_grad() if training else torch.no_grad()
+        with grad_context, _autocast(scaler_enabled):
             if kd_weight != 0:
                 with torch.no_grad():
                     teacher_features = teacher.forward_until(inputs, teacher_middle_index)
@@ -268,7 +275,8 @@ def run_stage2_epoch(
         if training:
             optimizer.zero_grad(set_to_none=True)
 
-        with _autocast(scaler_enabled):
+        grad_context = torch.enable_grad() if training else torch.no_grad()
+        with grad_context, _autocast(scaler_enabled):
             if kd_weight != 0:
                 with torch.no_grad():
                     teacher_logits = teacher(inputs)
@@ -302,6 +310,68 @@ def run_stage2_epoch(
         )
 
     return _to_epoch_stats(stats)
+
+
+@torch.no_grad()
+def feature_shape(
+    model: nn.Module,
+    middle_index: int,
+    input_channels: int,
+    image_size: int,
+    device: torch.device,
+) -> tuple[int, int, int]:
+    """Return (channels, height, width) of a model's middle feature map."""
+    was_training = model.training
+    model.eval()
+    dummy = torch.zeros(1, input_channels, image_size, image_size, device=device)
+    feat = model.forward_until(dummy, middle_index)
+    model.train(was_training)
+    return int(feat.shape[1]), int(feat.shape[2]), int(feat.shape[3])
+
+
+def run_fitnet_hint_epoch(
+    teacher: nn.Module,
+    student: nn.Module,
+    regressor: nn.Module,
+    loader: Iterable,
+    optimizer: torch.optim.Optimizer | None,
+    device: torch.device,
+    teacher_middle_index: int,
+    student_middle_index: int,
+    amp: bool,
+    scaler: torch.cuda.amp.GradScaler | None = None,
+) -> HintEpochStats:
+    """Original FitNets Stage 1: regress student guided features onto teacher hints."""
+    training = optimizer is not None
+    teacher.eval()
+    student.train(training)
+    regressor.train(training)
+    meter = Meter()
+    scaler_enabled = amp and device.type == "cuda"
+
+    for inputs, _targets in loader:
+        inputs = inputs.to(device, non_blocking=True)
+
+        if training:
+            optimizer.zero_grad(set_to_none=True)
+
+        with torch.no_grad():
+            teacher_hint = teacher.forward_until(inputs, teacher_middle_index)
+
+        grad_context = torch.enable_grad() if training else torch.no_grad()
+        with grad_context, _autocast(scaler_enabled):
+            student_feat = student.forward_until(inputs, student_middle_index)
+            student_hint = regressor(student_feat)
+            loss = hint_mse_loss(student_hint, teacher_hint)
+
+        if training:
+            _backward_step(loss, optimizer, scaler)
+            apply_fitnet_constraints(student)
+            apply_fitnet_constraints(regressor)
+
+        meter.update(float(loss.detach()), inputs.size(0))
+
+    return HintEpochStats(loss=meter.avg)
 
 
 def clone_state_dict(module: nn.Module) -> dict[str, torch.Tensor]:

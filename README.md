@@ -55,10 +55,15 @@ The PyTorch flow implements the projected-logit design:
   `h4/h10/h16` pooling, a 500-unit Maxout fully connected layer, and a final
   classifier.
 - The original repo does not include the teacher YAML, only a
-  `<path_teacher_pkl>` placeholder. The bundled PyTorch teacher is therefore a
-  wider Maxout FitNet-style teacher with the original hint index defaulting to
-  teacher layer `1`. If you have the exact original teacher architecture, add it
-  to `torch_fitnets/models.py` and pass it through `--teacher-arch`.
+  `<path_teacher_pkl>` placeholder. The FitNets paper distills the Goodfellow
+  Maxout-CNN teacher, so `maxout_cifar_teacher` reproduces that architecture:
+  three maxout convolutional layers (96-192-192, 2 pieces, 8x8/8x8/5x5 kernels,
+  4x4/4x4/2x2 pooling, max-kernel-norm 0.9/1.9365/1.9365), a 500-unit / 5-piece
+  maxout fully connected layer, and a softmax. The hint index defaults to teacher
+  layer `1` (the middle conv), matching the original `hints: [[10, 1]]`. The
+  teacher trains with RMSprop (lr 0.005, alpha 0.9, eps 1e-5), per-conv
+  `W_lr_scale=0.05`, max-norm constraints, and no L2 weight decay, mirroring the
+  pylearn2 FitNet recipe.
 - Stage 0 freezes the teacher backbone and trains `teacher_proj`, a bias-free
   `1x1` projection plus global average pooling from teacher middle features to
   class logits, using true-label CE.
@@ -86,6 +91,52 @@ Useful Stage 1 controls:
 - `--stage1-temperature` controls middle-logit KL temperature.
 - `--stage1-ce-weight` keeps the student projection aligned with true labels.
 - `--stage1-kd-weight` controls the teacher projected-logit KL weight.
+
+FitNets baseline (for comparison)
+---------------------------------
+
+`train_fitnets_baseline_torch.py` implements the *original* FitNets recipe so it
+can be compared head-to-head with the projected-logit variant:
+
+- Stage 1 (hints): a convolutional regressor maps the student guided feature map
+  onto the teacher hint feature map, trained with the FitNets MSE objective
+  (`torch_fitnets/regressors.py`, `losses.hint_mse_loss`).
+- Stage 2 (KD): the full student is trained with CE + KD from the teacher's final
+  logits (identical to the projected variant's final stage).
+
+```
+python train_fitnets_baseline_torch.py \
+  --dataset cifar100 --download \
+  --teacher-ckpt checkpoints/cifar100_teacher.pt \
+  --output-dir runs/cifar100_fitnets_baseline \
+  --hint-epochs 40 --kd-epochs 288 --device cuda --amp
+```
+
+GCN+ZCA whitening
+-----------------
+
+Pass `--whiten` to any of the three scripts to reproduce the original
+FitNets/Maxout preprocessing (per-image global contrast normalization with
+`scale=55`, then dataset ZCA whitening with `filter_bias=0.1`). It is computed
+once per launch on CIFAR-10/CIFAR-100. The default is standard per-channel
+mean/std normalization; for an internal A/B comparison either works as long as
+the teacher and both students use the same setting.
+
+One-command comparison (disconnect-safe)
+----------------------------------------
+
+`scripts/run_comparison.sh` trains one teacher and both students (FitNets
+baseline + projected logits) end to end, each stage tee'd to its own log:
+
+```
+nohup bash scripts/run_comparison.sh > runs/compare.out 2>&1 &
+tail -f runs/compare_cifar100/logs/*.log
+```
+
+It is configurable via environment variables (`DATASET`, `WHITEN`, `AMP`,
+`TEACHER_EPOCHS`, `HINT_EPOCHS`, `KD_EPOCHS`, `TEACHER_CKPT`, ...) and skips
+teacher training if the checkpoint already exists, so re-runs only redo the
+students.
 
 Install PyTorch and torchvision with the CUDA build that matches your NVIDIA
 driver from https://pytorch.org/get-started/locally/.

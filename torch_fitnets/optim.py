@@ -42,6 +42,7 @@ def build_optimizer(
     momentum: float,
     weight_decay: float,
     rmsprop_alpha: float = 0.9,
+    rmsprop_eps: float = 1e-5,
 ) -> torch.optim.Optimizer:
     optimizer_name = optimizer_name.lower()
     if optimizer_name == "rmsprop":
@@ -49,6 +50,7 @@ def build_optimizer(
             param_groups,
             lr=lr,
             alpha=rmsprop_alpha,
+            eps=rmsprop_eps,
             momentum=momentum,
             weight_decay=weight_decay,
         )

@@ -35,6 +35,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--data-root", default="./data")
     parser.add_argument("--download", action="store_true")
+    parser.add_argument(
+        "--whiten",
+        action="store_true",
+        help="Use GCN+ZCA whitening (must match the teacher's preprocessing).",
+    )
     parser.add_argument("--output-dir", default="./runs/projected_fitnets_cifar100")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=1337)
@@ -89,7 +94,7 @@ def resolve_arches(dataset: str, teacher_arch: str, student_arch: str) -> tuple[
         default_teacher = "fitnet6_mnist_teacher"
         default_student = "fitnet6_mnist_student"
     else:
-        default_teacher = "fitnet19_cifar_teacher"
+        default_teacher = "maxout_cifar_teacher"
         default_student = "fitnet19_cifar_student"
 
     if teacher_arch == "auto":
@@ -221,6 +226,7 @@ def main() -> None:
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         download=args.download,
+        whiten=args.whiten,
     )
 
     teacher = build_model(
@@ -494,6 +500,7 @@ def main() -> None:
                     epoch=epoch,
                     eval_acc=eval_stats.acc,
                 )
+        print(f"done. best student eval_acc={best_acc:.4f}")
 
     print(f"done. checkpoints are in {output_dir}")
 

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 
@@ -87,6 +87,7 @@ class ConvLayerSpec:
     padding: int = 1
     pool_shape: tuple[int, int] = (1, 1)
     pool_stride: tuple[int, int] = (1, 1)
+    max_kernel_norm: float = 0.9
 
 
 @dataclass(frozen=True)
@@ -125,6 +126,7 @@ class FitNetCNN(nn.Module):
                     pool_shape=layer.pool_shape,
                     pool_stride=layer.pool_stride,
                     irange=irange,
+                    max_kernel_norm=layer.max_kernel_norm,
                 )
             )
             prev = layer.num_channels
@@ -190,6 +192,165 @@ class FitNetCNN(nn.Module):
         return logits, middle
 
 
+class CifarResNetBasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(
+        self,
+        inplanes: int,
+        planes: int,
+        stride: int = 1,
+        downsample: nn.Module | None = None,
+    ) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(
+            inplanes,
+            planes,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+            bias=False,
+        )
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(
+            planes,
+            planes,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            bias=False,
+        )
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.downsample = downsample
+        self.stride = stride
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        if self.downsample is not None:
+            residual = self.downsample(x)
+        return F.relu(out + residual, inplace=True)
+
+
+@dataclass(frozen=True)
+class CifarResNetSpec:
+    depth: int
+    filters: tuple[int, int, int, int]
+    default_middle: int = 2
+
+
+class CifarResNet(nn.Module):
+    """CIFAR ResNet compatible with common RepDistiller checkpoints."""
+
+    def __init__(
+        self,
+        input_channels: int,
+        image_size: int,
+        num_classes: int,
+        spec: CifarResNetSpec,
+    ) -> None:
+        super().__init__()
+        if input_channels != 3 or image_size != 32:
+            raise ValueError("CIFAR ResNet teachers expect 3x32x32 inputs.")
+        if (spec.depth - 2) % 6 != 0:
+            raise ValueError("CIFAR basic-block ResNet depth must be 6n+2.")
+
+        self.spec = spec
+        self.feature_channels = list(spec.filters)
+        self.inplanes = spec.filters[0]
+        blocks_per_group = (spec.depth - 2) // 6
+
+        self.conv1 = nn.Conv2d(
+            3,
+            spec.filters[0],
+            kernel_size=3,
+            padding=1,
+            bias=False,
+        )
+        self.bn1 = nn.BatchNorm2d(spec.filters[0])
+        self.relu = nn.ReLU(inplace=True)
+        self.layer1 = self._make_layer(spec.filters[1], blocks_per_group)
+        self.layer2 = self._make_layer(spec.filters[2], blocks_per_group, stride=2)
+        self.layer3 = self._make_layer(spec.filters[3], blocks_per_group, stride=2)
+        self.avgpool = nn.AvgPool2d(8)
+        self.fc = nn.Linear(spec.filters[3], num_classes)
+
+        for module in self.modules():
+            if isinstance(module, nn.Conv2d):
+                nn.init.kaiming_normal_(
+                    module.weight,
+                    mode="fan_out",
+                    nonlinearity="relu",
+                )
+            elif isinstance(module, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.ones_(module.weight)
+                nn.init.zeros_(module.bias)
+
+    @property
+    def num_feature_layers(self) -> int:
+        return 4
+
+    def _make_layer(
+        self,
+        planes: int,
+        blocks: int,
+        stride: int = 1,
+    ) -> nn.Sequential:
+        downsample = None
+        if stride != 1 or self.inplanes != planes:
+            downsample = nn.Sequential(
+                nn.Conv2d(self.inplanes, planes, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(planes),
+            )
+
+        layers = [CifarResNetBasicBlock(self.inplanes, planes, stride, downsample)]
+        self.inplanes = planes
+        for _ in range(1, blocks):
+            layers.append(CifarResNetBasicBlock(self.inplanes, planes))
+        return nn.Sequential(*layers)
+
+    def _forward_features(self, x: torch.Tensor) -> list[torch.Tensor]:
+        features = []
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        features.append(x)
+        x = self.layer1(x)
+        features.append(x)
+        x = self.layer2(x)
+        features.append(x)
+        x = self.layer3(x)
+        features.append(x)
+        return features
+
+    def forward_until(self, x: torch.Tensor, layer_index: int) -> torch.Tensor:
+        if layer_index < 0 or layer_index >= self.num_feature_layers:
+            raise IndexError(f"middle layer index {layer_index} is out of range")
+        return self._forward_features(x)[layer_index]
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        return_feature_index: int | None = None,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        features = self._forward_features(x)
+        x = self.avgpool(features[-1])
+        x = x.view(x.size(0), -1)
+        logits = self.fc(x)
+        if return_feature_index is None:
+            return logits
+        if return_feature_index < 0 or return_feature_index >= len(features):
+            raise IndexError(
+                f"middle layer index {return_feature_index} is out of range"
+            )
+        return logits, features[return_feature_index]
+
+
 def _cifar_student_layers() -> tuple[ConvLayerSpec, ...]:
     channels = (
         32,
@@ -233,47 +394,41 @@ def _cifar_student_layers() -> tuple[ConvLayerSpec, ...]:
     return tuple(layers)
 
 
-def _cifar_teacher_layers() -> tuple[ConvLayerSpec, ...]:
-    channels = (
-        96,
-        96,
-        96,
-        128,
-        128,
-        192,
-        192,
-        192,
-        192,
-        192,
-        192,
-        256,
-        256,
-        256,
-        256,
-        256,
-        256,
+def _cifar_teacher_maxout_layers() -> tuple[ConvLayerSpec, ...]:
+    """Goodfellow Maxout-CNN used as the FitNets CIFAR teacher.
+
+    Three maxout convolutional layers (96-192-192, 2 pieces) with 4x4/4x4/2x2
+    max-pooling, matching the architecture distilled in the FitNets paper.
+    """
+    return (
+        ConvLayerSpec(
+            num_channels=96,
+            num_pieces=2,
+            kernel_size=8,
+            padding=4,
+            pool_shape=(4, 4),
+            pool_stride=(2, 2),
+            max_kernel_norm=0.9,
+        ),
+        ConvLayerSpec(
+            num_channels=192,
+            num_pieces=2,
+            kernel_size=8,
+            padding=3,
+            pool_shape=(4, 4),
+            pool_stride=(2, 2),
+            max_kernel_norm=1.9365,
+        ),
+        ConvLayerSpec(
+            num_channels=192,
+            num_pieces=2,
+            kernel_size=5,
+            padding=3,
+            pool_shape=(2, 2),
+            pool_stride=(2, 2),
+            max_kernel_norm=1.9365,
+        ),
     )
-    layers = []
-    for idx, channels_i in enumerate(channels):
-        if idx in (4, 10):
-            layers.append(
-                ConvLayerSpec(
-                    num_channels=channels_i,
-                    pool_shape=(2, 2),
-                    pool_stride=(2, 2),
-                )
-            )
-        elif idx == 16:
-            layers.append(
-                ConvLayerSpec(
-                    num_channels=channels_i,
-                    pool_shape=(8, 8),
-                    pool_stride=(1, 1),
-                )
-            )
-        else:
-            layers.append(ConvLayerSpec(num_channels=channels_i))
-    return tuple(layers)
 
 
 def _mnist_student_layers() -> tuple[ConvLayerSpec, ...]:
@@ -305,8 +460,8 @@ CIFAR_STUDENT_19 = ModelSpec(
     fc_pieces=5,
 )
 
-CIFAR_TEACHER_19 = ModelSpec(
-    conv_layers=_cifar_teacher_layers(),
+CIFAR_TEACHER_MAXOUT = ModelSpec(
+    conv_layers=_cifar_teacher_maxout_layers(),
     default_middle=1,
     fc_units=500,
     fc_pieces=5,
@@ -326,9 +481,13 @@ MNIST_TEACHER_6 = ModelSpec(
 
 MODEL_SPECS: dict[str, ModelSpec] = {
     "fitnet19_cifar_student": CIFAR_STUDENT_19,
-    "fitnet19_cifar_teacher": CIFAR_TEACHER_19,
+    "maxout_cifar_teacher": CIFAR_TEACHER_MAXOUT,
     "fitnet6_mnist_student": MNIST_STUDENT_6,
     "fitnet6_mnist_teacher": MNIST_TEACHER_6,
+}
+
+CIFAR_RESNET_SPECS: dict[str, CifarResNetSpec] = {
+    "resnet32x4": CifarResNetSpec(depth=32, filters=(32, 64, 128, 256)),
 }
 
 
@@ -340,19 +499,38 @@ def build_model(
 ) -> FitNetCNN:
     try:
         spec = MODEL_SPECS[arch]
+    except KeyError:
+        spec = None
+
+    if spec is not None:
+        return FitNetCNN(
+            input_channels=input_channels,
+            image_size=image_size,
+            num_classes=num_classes,
+            spec=spec,
+        )
+
+    try:
+        resnet_spec = CIFAR_RESNET_SPECS[arch]
     except KeyError as exc:
-        known = ", ".join(sorted(MODEL_SPECS))
+        known = ", ".join(sorted(set(MODEL_SPECS) | set(CIFAR_RESNET_SPECS)))
         raise ValueError(f"Unknown model arch '{arch}'. Known: {known}") from exc
-    return FitNetCNN(
+
+    return CifarResNet(
         input_channels=input_channels,
         image_size=image_size,
         num_classes=num_classes,
-        spec=spec,
+        spec=resnet_spec,
     )
 
 
 def default_middle_index(arch: str) -> int:
-    return MODEL_SPECS[arch].default_middle
+    if arch in MODEL_SPECS:
+        return MODEL_SPECS[arch].default_middle
+    if arch in CIFAR_RESNET_SPECS:
+        return CIFAR_RESNET_SPECS[arch].default_middle
+    known = ", ".join(sorted(set(MODEL_SPECS) | set(CIFAR_RESNET_SPECS)))
+    raise ValueError(f"Unknown model arch '{arch}'. Known: {known}")
 
 
 def _renorm_rows_(weight: torch.Tensor, max_norm: float) -> None:

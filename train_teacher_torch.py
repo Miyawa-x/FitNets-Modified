@@ -38,6 +38,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--data-root", default="./data")
     parser.add_argument("--download", action="store_true")
+    parser.add_argument(
+        "--whiten",
+        action="store_true",
+        help="Use GCN+ZCA whitening (matches the original FitNets/Maxout preprocessing).",
+    )
     parser.add_argument("--arch", default="auto")
     parser.add_argument("--output", default="checkpoints/cifar100_teacher.pt")
     parser.add_argument("--device", default="auto")
@@ -48,8 +53,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=0.005)
     parser.add_argument("--optimizer", default="rmsprop", choices=["rmsprop", "sgd"])
     parser.add_argument("--rmsprop-alpha", type=float, default=0.9)
+    parser.add_argument("--rmsprop-eps", type=float, default=1e-5)
     parser.add_argument("--momentum", type=float, default=0.0)
-    parser.add_argument("--weight-decay", type=float, default=5e-4)
+    # The FitNets/Maxout teacher relies on max-norm constraints rather than L2
+    # weight decay, so the default is 0 to stay aligned with the original recipe.
+    parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--milestones", type=int, nargs="*", default=[])
     parser.add_argument("--gamma", type=float, default=0.1)
     parser.add_argument("--amp", action="store_true")
@@ -73,7 +81,7 @@ def resolve_arch(dataset: str, arch: str) -> str:
         return arch
     if dataset == "mnist":
         return "fitnet6_mnist_teacher"
-    return "fitnet19_cifar_teacher"
+    return "maxout_cifar_teacher"
 
 
 def autocast_context(device: torch.device, enabled: bool):
@@ -113,7 +121,8 @@ def run_epoch(
         if training:
             optimizer.zero_grad(set_to_none=True)
 
-        with autocast_context(device, amp):
+        grad_context = torch.enable_grad() if training else torch.no_grad()
+        with grad_context, autocast_context(device, amp):
             logits = model(inputs)
             loss = F.cross_entropy(logits, targets)
 
@@ -153,6 +162,7 @@ def main() -> None:
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         download=args.download,
+        whiten=args.whiten,
     )
     arch = resolve_arch(args.dataset, args.arch)
     model = build_model(
@@ -169,6 +179,7 @@ def main() -> None:
         momentum=args.momentum,
         weight_decay=args.weight_decay,
         rmsprop_alpha=args.rmsprop_alpha,
+        rmsprop_eps=args.rmsprop_eps,
     )
     scheduler = torch.optim.lr_scheduler.MultiStepLR(
         optimizer,
@@ -234,7 +245,7 @@ def main() -> None:
                 eval_acc=eval_acc,
             )
 
-    print(f"done. best teacher checkpoint: {output}")
+    print(f"done. best teacher checkpoint: {output} (best eval_acc={best_acc:.4f})")
 
 
 if __name__ == "__main__":

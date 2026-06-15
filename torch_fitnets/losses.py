@@ -19,6 +19,19 @@ def kd_kl_loss(
     )
 
 
+def hint_mse_loss(
+    student_hint: torch.Tensor,
+    teacher_hint: torch.Tensor,
+) -> torch.Tensor:
+    """Original FitNets hint objective: 0.5 * ||teacher - student||^2.
+
+    The squared error is summed over the feature dimensions and averaged over
+    the batch, matching ``HintCost`` from the legacy pylearn2 implementation.
+    """
+    diff = student_hint - teacher_hint
+    return 0.5 * diff.pow(2).flatten(1).sum(dim=1).mean()
+
+
 def logits_entropy(logits: torch.Tensor) -> torch.Tensor:
     probs = F.softmax(logits, dim=1)
     log_probs = F.log_softmax(logits, dim=1)
