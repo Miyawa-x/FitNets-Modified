@@ -71,6 +71,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--amp", action="store_true")
+    parser.add_argument(
+        "--grad-clip",
+        type=float,
+        default=5.0,
+        help="Max gradient norm (0 = off). Stabilizes the deep unnormalized student front.",
+    )
 
     parser.add_argument("--hint-epochs", type=int, default=40)
     parser.add_argument("--kd-epochs", type=int, default=288)
@@ -185,6 +191,8 @@ def main() -> None:
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
 
+    grad_clip = args.grad_clip or None
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -298,7 +306,7 @@ def main() -> None:
         for epoch in range(1, args.hint_epochs + 1):
             train_stats = run_fitnet_hint_epoch(
                 teacher, student, regressor, train_loader, optimizer, device,
-                teacher_mid_index, student_mid_index, args.amp, scaler,
+                teacher_mid_index, student_mid_index, args.amp, scaler, grad_clip,
             )
             eval_stats = run_fitnet_hint_epoch(
                 teacher, student, regressor, eval_loader, None, device,
@@ -355,7 +363,7 @@ def main() -> None:
         for epoch in range(1, args.kd_epochs + 1):
             train_stats = run_stage2_epoch(
                 teacher, student, train_loader, optimizer, device,
-                args.kd_temperature, args.kd_ce_weight, args.kd_kd_weight, args.amp, scaler,
+                args.kd_temperature, args.kd_ce_weight, args.kd_kd_weight, args.amp, scaler, grad_clip,
             )
             eval_stats = run_stage2_epoch(
                 teacher, student, eval_loader, None, device,

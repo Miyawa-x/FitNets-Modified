@@ -126,17 +126,28 @@ def _autocast(enabled: bool):
     return nullcontext()
 
 
+def _clip_gradients(optimizer: torch.optim.Optimizer, max_norm: float) -> None:
+    params = [p for group in optimizer.param_groups for p in group["params"]]
+    torch.nn.utils.clip_grad_norm_(params, max_norm)
+
+
 def _backward_step(
     loss: torch.Tensor,
     optimizer: torch.optim.Optimizer,
     scaler: torch.cuda.amp.GradScaler | None,
+    grad_clip: float | None = None,
 ) -> None:
     if scaler is not None and scaler.is_enabled():
         scaler.scale(loss).backward()
+        if grad_clip:
+            scaler.unscale_(optimizer)
+            _clip_gradients(optimizer, grad_clip)
         scaler.step(optimizer)
         scaler.update()
     else:
         loss.backward()
+        if grad_clip:
+            _clip_gradients(optimizer, grad_clip)
         optimizer.step()
 
 
@@ -149,6 +160,7 @@ def run_stage0_epoch(
     middle_index: int,
     amp: bool,
     scaler: torch.cuda.amp.GradScaler | None = None,
+    grad_clip: float | None = None,
 ) -> EpochStats:
     training = optimizer is not None
     teacher.eval()
@@ -173,7 +185,7 @@ def run_stage0_epoch(
             loss = ce_loss
 
         if training:
-            _backward_step(loss, optimizer, scaler)
+            _backward_step(loss, optimizer, scaler, grad_clip)
 
         _update_projection_stats(stats, logits, targets, loss, ce_loss)
 
@@ -195,6 +207,7 @@ def run_stage1_epoch(
     kd_weight: float,
     amp: bool,
     scaler: torch.cuda.amp.GradScaler | None = None,
+    grad_clip: float | None = None,
 ) -> EpochStats:
     training = optimizer is not None
     teacher.eval()
@@ -235,7 +248,7 @@ def run_stage1_epoch(
                 loss = ce_weight * ce_loss
 
         if training:
-            _backward_step(loss, optimizer, scaler)
+            _backward_step(loss, optimizer, scaler, grad_clip)
             apply_fitnet_constraints(student)
 
         _update_projection_stats(
@@ -261,6 +274,7 @@ def run_stage2_epoch(
     kd_weight: float,
     amp: bool,
     scaler: torch.cuda.amp.GradScaler | None = None,
+    grad_clip: float | None = None,
 ) -> EpochStats:
     training = optimizer is not None
     teacher.eval()
@@ -297,7 +311,7 @@ def run_stage2_epoch(
                 loss = ce_weight * ce_loss
 
         if training:
-            _backward_step(loss, optimizer, scaler)
+            _backward_step(loss, optimizer, scaler, grad_clip)
             apply_fitnet_constraints(student)
 
         _update_projection_stats(
@@ -340,6 +354,7 @@ def run_fitnet_hint_epoch(
     student_middle_index: int,
     amp: bool,
     scaler: torch.cuda.amp.GradScaler | None = None,
+    grad_clip: float | None = None,
 ) -> HintEpochStats:
     """Original FitNets Stage 1: regress student guided features onto teacher hints."""
     training = optimizer is not None
@@ -365,7 +380,7 @@ def run_fitnet_hint_epoch(
             loss = hint_mse_loss(student_hint, teacher_hint)
 
         if training:
-            _backward_step(loss, optimizer, scaler)
+            _backward_step(loss, optimizer, scaler, grad_clip)
             apply_fitnet_constraints(student)
             apply_fitnet_constraints(regressor)
 

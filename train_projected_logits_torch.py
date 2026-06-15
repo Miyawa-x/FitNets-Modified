@@ -63,6 +63,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--amp", action="store_true")
+    parser.add_argument(
+        "--grad-clip",
+        type=float,
+        default=5.0,
+        help="Max gradient norm (0 = off). Stabilizes the deep unnormalized student front.",
+    )
 
     parser.add_argument("--stage0-epochs", type=int, default=20)
     parser.add_argument("--stage1-epochs", type=int, default=40)
@@ -200,6 +206,8 @@ def main() -> None:
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
 
+    grad_clip = args.grad_clip or None
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -318,6 +326,7 @@ def main() -> None:
                 teacher_mid_index,
                 args.amp,
                 scaler,
+                grad_clip,
             )
             eval_stats = run_stage0_epoch(
                 teacher,
@@ -400,6 +409,7 @@ def main() -> None:
                 args.stage1_kd_weight,
                 args.amp,
                 scaler,
+                grad_clip,
             )
             eval_stats = run_stage1_epoch(
                 teacher,
@@ -476,6 +486,7 @@ def main() -> None:
                 args.stage2_kd_weight,
                 args.amp,
                 scaler,
+                grad_clip,
             )
             eval_stats = run_stage2_epoch(
                 teacher,
