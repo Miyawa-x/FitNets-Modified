@@ -120,6 +120,26 @@ python train_fitnets_baseline_torch.py \
   --hint-epochs 40 --kd-epochs 288 --device cuda --amp
 ```
 
+Relation FitNets (heterogeneous features)
+-----------------------------------------
+
+`train_relation_fitnets_torch.py` removes the learned hint regressor entirely.
+Stage 1 flattens each model's native middle feature and matches normalized
+pairwise distances plus centered cosine-similarity matrices across the batch.
+Teacher and student feature dimensions may differ because both relation
+matrices are `batch_size x batch_size`. Stage 2 is the same final CE + KD
+training used by the baseline.
+
+```
+python train_relation_fitnets_torch.py \
+  --dataset cifar100 --download --whiten \
+  --teacher-ckpt checkpoints/cifar100_teacher.pt \
+  --output-dir runs/cifar100_relation_fitnets \
+  --relation-epochs 40 --kd-epochs 288 \
+  --distance-weight 1 --similarity-weight 1 \
+  --device cuda --amp
+```
+
 GCN+ZCA whitening
 -----------------
 

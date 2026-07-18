@@ -32,6 +32,52 @@ def hint_mse_loss(
     return 0.5 * diff.pow(2).flatten(1).sum(dim=1).mean()
 
 
+def _off_diagonal_mask(batch_size: int, device: torch.device) -> torch.Tensor:
+    if batch_size < 2:
+        raise ValueError("relational distillation requires at least two samples")
+    return ~torch.eye(batch_size, dtype=torch.bool, device=device)
+
+
+def relation_distance_loss(
+    student_feature: torch.Tensor,
+    teacher_feature: torch.Tensor,
+    eps: float = 1e-12,
+) -> torch.Tensor:
+    """Match normalized pairwise distances without aligning feature dimensions."""
+    student = student_feature.flatten(1).float()
+    teacher = teacher_feature.detach().flatten(1).float()
+    mask = _off_diagonal_mask(student.shape[0], student.device)
+
+    student_distance = torch.cdist(student, student, p=2)
+    teacher_distance = torch.cdist(teacher, teacher, p=2)
+    student_scale = student_distance[mask].mean().clamp_min(eps)
+    teacher_scale = teacher_distance[mask].mean().clamp_min(eps)
+
+    return F.smooth_l1_loss(
+        student_distance[mask] / student_scale,
+        teacher_distance[mask] / teacher_scale,
+    )
+
+
+def relation_similarity_loss(
+    student_feature: torch.Tensor,
+    teacher_feature: torch.Tensor,
+    eps: float = 1e-12,
+) -> torch.Tensor:
+    """Match pairwise cosine geometry in each model's native feature space."""
+    student = student_feature.flatten(1).float()
+    teacher = teacher_feature.detach().flatten(1).float()
+    student = F.normalize(student - student.mean(dim=0, keepdim=True), dim=1, eps=eps)
+    teacher = F.normalize(teacher - teacher.mean(dim=0, keepdim=True), dim=1, eps=eps)
+    mask = _off_diagonal_mask(student.shape[0], student.device)
+    student_similarity = student @ student.t()
+    teacher_similarity = teacher @ teacher.t()
+    return F.smooth_l1_loss(
+        student_similarity[mask],
+        teacher_similarity[mask],
+    )
+
+
 def logits_entropy(logits: torch.Tensor) -> torch.Tensor:
     probs = F.softmax(logits, dim=1)
     log_probs = F.log_softmax(logits, dim=1)

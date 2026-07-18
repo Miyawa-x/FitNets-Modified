@@ -9,7 +9,15 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .losses import accuracy, hint_mse_loss, kd_kl_loss, logits_entropy, logits_std
+from .losses import (
+    accuracy,
+    hint_mse_loss,
+    kd_kl_loss,
+    logits_entropy,
+    logits_std,
+    relation_distance_loss,
+    relation_similarity_loss,
+)
 from .models import apply_fitnet_constraints
 
 
@@ -26,6 +34,13 @@ class EpochStats:
 @dataclass
 class HintEpochStats:
     loss: float
+
+
+@dataclass
+class RelationEpochStats:
+    loss: float
+    distance: float
+    similarity: float
 
 
 class Meter:
@@ -387,6 +402,69 @@ def run_fitnet_hint_epoch(
         meter.update(float(loss.detach()), inputs.size(0))
 
     return HintEpochStats(loss=meter.avg)
+
+
+def run_relation_hint_epoch(
+    teacher: nn.Module,
+    student: nn.Module,
+    loader: Iterable,
+    optimizer: torch.optim.Optimizer | None,
+    device: torch.device,
+    teacher_middle_index: int,
+    student_middle_index: int,
+    distance_weight: float,
+    similarity_weight: float,
+    amp: bool,
+    scaler: torch.cuda.amp.GradScaler | None = None,
+    grad_clip: float | None = None,
+) -> RelationEpochStats:
+    """Train the student front by matching teacher batch geometry directly."""
+    training = optimizer is not None
+    teacher.eval()
+    student.train(training)
+    loss_meter = Meter()
+    distance_meter = Meter()
+    similarity_meter = Meter()
+    scaler_enabled = amp and device.type == "cuda"
+
+    for inputs, _targets in loader:
+        inputs = inputs.to(device, non_blocking=True)
+        if inputs.size(0) < 2:
+            continue
+
+        if training:
+            optimizer.zero_grad(set_to_none=True)
+
+        with torch.no_grad():
+            teacher_feature = teacher.forward_until(inputs, teacher_middle_index)
+
+        grad_context = torch.enable_grad() if training else torch.no_grad()
+        with grad_context:
+            with _autocast(scaler_enabled):
+                student_feature = student.forward_until(inputs, student_middle_index)
+
+            # High-dimensional pairwise geometry is intentionally evaluated in FP32.
+            distance = relation_distance_loss(student_feature, teacher_feature)
+            similarity = relation_similarity_loss(student_feature, teacher_feature)
+            loss = distance_weight * distance + similarity_weight * similarity
+
+        if not bool(torch.isfinite(loss)):
+            raise FloatingPointError("relation hint loss became non-finite")
+
+        if training:
+            _backward_step(loss, optimizer, scaler, grad_clip)
+            apply_fitnet_constraints(student)
+
+        batch = inputs.size(0)
+        loss_meter.update(float(loss.detach()), batch)
+        distance_meter.update(float(distance.detach()), batch)
+        similarity_meter.update(float(similarity.detach()), batch)
+
+    return RelationEpochStats(
+        loss=loss_meter.avg,
+        distance=distance_meter.avg,
+        similarity=similarity_meter.avg,
+    )
 
 
 def clone_state_dict(module: nn.Module) -> dict[str, torch.Tensor]:
