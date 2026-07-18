@@ -34,6 +34,11 @@ python train_teacher_torch.py \
   --amp
 ```
 
+Teacher checkpoints include model, optimizer, scheduler, scaler, epoch, and
+preprocessing metadata. Resume an interrupted run with
+`--resume checkpoints/cifar100_teacher_last.pt`; `--epochs` remains the final
+target epoch rather than an additional epoch count.
+
 Then run projected-logit FitNets:
 
 ```

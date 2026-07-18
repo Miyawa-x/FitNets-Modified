@@ -45,6 +45,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--arch", default="auto")
     parser.add_argument("--output", default="checkpoints/cifar100_teacher.pt")
+    parser.add_argument(
+        "--resume",
+        default=None,
+        help="Resume from a teacher checkpoint. Legacy checkpoints restore model and epoch only.",
+    )
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--batch-size", type=int, default=128)
@@ -189,6 +194,16 @@ def save_checkpoint(path: Path, **payload: Any) -> None:
     torch.save(payload, path)
 
 
+def load_checkpoint(path: str | Path, device: torch.device) -> dict[str, Any]:
+    try:
+        payload = torch.load(path, map_location=device, weights_only=True)
+    except TypeError:
+        payload = torch.load(path, map_location=device)
+    if not isinstance(payload, dict):
+        raise TypeError(f"checkpoint {path} is not a dictionary")
+    return payload
+
+
 def main() -> None:
     args = parse_args()
     set_seed(args.seed)
@@ -243,8 +258,49 @@ def main() -> None:
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(config, indent=2))
 
+    start_epoch = 1
     best_acc = -1.0
-    for epoch in range(1, args.epochs + 1):
+    if args.resume is not None:
+        resume_payload = load_checkpoint(args.resume, device)
+        resume_arch = resume_payload.get("arch")
+        if resume_arch is not None and resume_arch != arch:
+            raise ValueError(
+                f"resume checkpoint arch is {resume_arch!r}, expected {arch!r}"
+            )
+        teacher_state = resume_payload.get("teacher", resume_payload)
+        model.load_state_dict(teacher_state, strict=True)
+        resume_epoch = int(resume_payload.get("epoch", 0))
+        start_epoch = resume_epoch + 1
+        best_acc = float(
+            resume_payload.get("best_acc", resume_payload.get("eval_acc", -1.0))
+        )
+
+        if "optimizer" in resume_payload:
+            optimizer.load_state_dict(resume_payload["optimizer"])
+        else:
+            print("warning: legacy checkpoint has no optimizer state; RMSProp restarts.")
+        if "scheduler" in resume_payload:
+            scheduler.load_state_dict(resume_payload["scheduler"])
+        elif args.milestones:
+            print("warning: legacy checkpoint has no scheduler state.")
+        if "scaler" in resume_payload and scaler is not None:
+            scaler.load_state_dict(resume_payload["scaler"])
+
+        if output.exists() and output.resolve() != Path(args.resume).resolve():
+            best_payload = load_checkpoint(output, device)
+            best_acc = max(best_acc, float(best_payload.get("eval_acc", -1.0)))
+        print(
+            f"resumed teacher from {args.resume} at epoch {resume_epoch}; "
+            f"continuing with epoch {start_epoch}."
+        )
+
+    if start_epoch > args.epochs:
+        raise ValueError(
+            f"resume checkpoint already reached epoch {start_epoch - 1}, "
+            f"but --epochs is {args.epochs}"
+        )
+
+    for epoch in range(start_epoch, args.epochs + 1):
         (
             train_loss,
             train_acc,
@@ -282,23 +338,29 @@ def main() -> None:
             f"lr={scheduler.get_last_lr()[0]:.6f}"
         )
 
+        is_best = eval_acc > best_acc
+        if is_best:
+            best_acc = eval_acc
+
+        checkpoint = {
+            "teacher": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "scaler": scaler.state_dict() if scaler is not None else None,
+            "arch": arch,
+            "epoch": epoch,
+            "eval_acc": eval_acc,
+            "best_acc": best_acc,
+            "config": config,
+        }
         save_checkpoint(
             output.with_name(output.stem + "_last.pt"),
-            teacher=model.state_dict(),
-            arch=arch,
-            epoch=epoch,
-            eval_acc=eval_acc,
-            config=config,
+            **checkpoint,
         )
-        if eval_acc > best_acc:
-            best_acc = eval_acc
+        if is_best:
             save_checkpoint(
                 output,
-                teacher=model.state_dict(),
-                arch=arch,
-                epoch=epoch,
-                eval_acc=eval_acc,
-                config=config,
+                **checkpoint,
             )
 
     print(f"done. best teacher checkpoint: {output} (best eval_acc={best_acc:.4f})")
