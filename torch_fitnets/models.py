@@ -410,7 +410,6 @@ def _cifar_teacher_maxout_layers() -> tuple[ConvLayerSpec, ...]:
             padding=4,
             pool_shape=(4, 4),
             pool_stride=(2, 2),
-            lr_scale=1.0,
             max_kernel_norm=0.9,
         ),
         ConvLayerSpec(
@@ -420,7 +419,6 @@ def _cifar_teacher_maxout_layers() -> tuple[ConvLayerSpec, ...]:
             padding=3,
             pool_shape=(4, 4),
             pool_stride=(2, 2),
-            lr_scale=1.0,
             max_kernel_norm=1.9365,
         ),
         ConvLayerSpec(
@@ -430,7 +428,6 @@ def _cifar_teacher_maxout_layers() -> tuple[ConvLayerSpec, ...]:
             padding=3,
             pool_shape=(2, 2),
             pool_stride=(2, 2),
-            lr_scale=1.0,
             max_kernel_norm=1.9365,
         ),
     )
