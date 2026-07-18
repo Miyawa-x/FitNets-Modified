@@ -115,13 +115,14 @@ def run_epoch(
     amp: bool,
     scaler: Any,
     grad_clip: float | None,
-) -> tuple[float, float, float, float]:
+) -> tuple[float, float, float, float, int]:
     training = optimizer is not None
     model.train(training)
     loss_meter = Meter()
     acc_meter = Meter()
     logit_abs_meter = Meter()
     grad_norm_meter = Meter()
+    amp_skips = 0
 
     for inputs, targets in loader:
         inputs = inputs.to(device, non_blocking=True)
@@ -147,10 +148,14 @@ def run_epoch(
                 grad_norm = torch.nn.utils.clip_grad_norm_(
                     model.parameters(),
                     grad_clip if grad_clip is not None else float("inf"),
-                    error_if_nonfinite=True,
+                    error_if_nonfinite=False,
                 )
+                scale_before = scaler.get_scale()
                 scaler.step(optimizer)
                 scaler.update()
+                step_skipped = scaler.get_scale() < scale_before
+                if step_skipped:
+                    amp_skips += 1
             else:
                 loss.backward()
                 grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -159,8 +164,11 @@ def run_epoch(
                     error_if_nonfinite=True,
                 )
                 optimizer.step()
-            apply_fitnet_constraints(model)
-            grad_norm_meter.update(float(grad_norm.detach()), targets.size(0))
+                step_skipped = False
+            if not step_skipped:
+                apply_fitnet_constraints(model)
+            if bool(torch.isfinite(grad_norm)):
+                grad_norm_meter.update(float(grad_norm.detach()), targets.size(0))
 
         batch = targets.size(0)
         loss_meter.update(float(loss.detach()), batch)
@@ -172,6 +180,7 @@ def run_epoch(
         acc_meter.avg,
         logit_abs_meter.avg,
         grad_norm_meter.avg,
+        amp_skips,
     )
 
 
@@ -236,7 +245,13 @@ def main() -> None:
 
     best_acc = -1.0
     for epoch in range(1, args.epochs + 1):
-        train_loss, train_acc, train_logit_abs, train_grad_norm = run_epoch(
+        (
+            train_loss,
+            train_acc,
+            train_logit_abs,
+            train_grad_norm,
+            train_amp_skips,
+        ) = run_epoch(
             model,
             train_loader,
             optimizer,
@@ -245,7 +260,7 @@ def main() -> None:
             scaler,
             grad_clip,
         )
-        eval_loss, eval_acc, eval_logit_abs, _ = run_epoch(
+        eval_loss, eval_acc, eval_logit_abs, _, _ = run_epoch(
             model,
             eval_loader,
             None,
@@ -263,6 +278,7 @@ def main() -> None:
             f"train_logit_abs={train_logit_abs:.4f} "
             f"eval_logit_abs={eval_logit_abs:.4f} "
             f"grad_norm={train_grad_norm:.4f} "
+            f"amp_skips={train_amp_skips} "
             f"lr={scheduler.get_last_lr()[0]:.6f}"
         )
 
