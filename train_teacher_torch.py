@@ -61,6 +61,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--milestones", type=int, nargs="*", default=[])
     parser.add_argument("--gamma", type=float, default=0.1)
     parser.add_argument("--amp", action="store_true")
+    parser.add_argument(
+        "--grad-clip",
+        type=float,
+        default=5.0,
+        help="Maximum gradient norm (0 disables clipping).",
+    )
     return parser.parse_args()
 
 
@@ -108,11 +114,14 @@ def run_epoch(
     device: torch.device,
     amp: bool,
     scaler: Any,
-) -> tuple[float, float]:
+    grad_clip: float | None,
+) -> tuple[float, float, float, float]:
     training = optimizer is not None
     model.train(training)
     loss_meter = Meter()
     acc_meter = Meter()
+    logit_abs_meter = Meter()
+    grad_norm_meter = Meter()
 
     for inputs, targets in loader:
         inputs = inputs.to(device, non_blocking=True)
@@ -126,21 +135,44 @@ def run_epoch(
             logits = model(inputs)
             loss = F.cross_entropy(logits, targets)
 
+        if not bool(torch.isfinite(logits).all()):
+            raise FloatingPointError("teacher produced non-finite logits")
+        if not bool(torch.isfinite(loss)):
+            raise FloatingPointError("teacher produced a non-finite CE loss")
+
         if training:
             if scaler is not None and scaler.is_enabled():
                 scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(),
+                    grad_clip if grad_clip is not None else float("inf"),
+                    error_if_nonfinite=True,
+                )
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 loss.backward()
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(),
+                    grad_clip if grad_clip is not None else float("inf"),
+                    error_if_nonfinite=True,
+                )
                 optimizer.step()
             apply_fitnet_constraints(model)
+            grad_norm_meter.update(float(grad_norm.detach()), targets.size(0))
 
         batch = targets.size(0)
         loss_meter.update(float(loss.detach()), batch)
         acc_meter.update(float(accuracy(logits, targets).detach()), batch)
+        logit_abs_meter.update(float(logits.detach().abs().max()), batch)
 
-    return loss_meter.avg, acc_meter.avg
+    return (
+        loss_meter.avg,
+        acc_meter.avg,
+        logit_abs_meter.avg,
+        grad_norm_meter.avg,
+    )
 
 
 def save_checkpoint(path: Path, **payload: Any) -> None:
@@ -187,6 +219,7 @@ def main() -> None:
         gamma=args.gamma,
     )
     scaler = make_scaler(device, args.amp)
+    grad_clip = args.grad_clip if args.grad_clip > 0 else None
 
     output = Path(args.output)
     config_path = output.with_suffix(".json")
@@ -203,21 +236,23 @@ def main() -> None:
 
     best_acc = -1.0
     for epoch in range(1, args.epochs + 1):
-        train_loss, train_acc = run_epoch(
+        train_loss, train_acc, train_logit_abs, train_grad_norm = run_epoch(
             model,
             train_loader,
             optimizer,
             device,
             args.amp,
             scaler,
+            grad_clip,
         )
-        eval_loss, eval_acc = run_epoch(
+        eval_loss, eval_acc, eval_logit_abs, _ = run_epoch(
             model,
             eval_loader,
             None,
             device,
             args.amp,
             scaler,
+            None,
         )
         scheduler.step()
 
@@ -225,6 +260,9 @@ def main() -> None:
             f"teacher epoch {epoch:03d}: "
             f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
             f"eval_loss={eval_loss:.4f} eval_acc={eval_acc:.4f} "
+            f"train_logit_abs={train_logit_abs:.4f} "
+            f"eval_logit_abs={eval_logit_abs:.4f} "
+            f"grad_norm={train_grad_norm:.4f} "
             f"lr={scheduler.get_last_lr()[0]:.6f}"
         )
 
@@ -234,6 +272,7 @@ def main() -> None:
             arch=arch,
             epoch=epoch,
             eval_acc=eval_acc,
+            config=config,
         )
         if eval_acc > best_acc:
             best_acc = eval_acc
@@ -243,6 +282,7 @@ def main() -> None:
                 arch=arch,
                 epoch=epoch,
                 eval_acc=eval_acc,
+                config=config,
             )
 
     print(f"done. best teacher checkpoint: {output} (best eval_acc={best_acc:.4f})")

@@ -87,6 +87,7 @@ class ConvLayerSpec:
     padding: int = 1
     pool_shape: tuple[int, int] = (1, 1)
     pool_stride: tuple[int, int] = (1, 1)
+    lr_scale: float = 0.05
     max_kernel_norm: float = 0.9
 
 
@@ -126,6 +127,7 @@ class FitNetCNN(nn.Module):
                     pool_shape=layer.pool_shape,
                     pool_stride=layer.pool_stride,
                     irange=irange,
+                    lr_scale=layer.lr_scale,
                     max_kernel_norm=layer.max_kernel_norm,
                 )
             )
@@ -408,6 +410,7 @@ def _cifar_teacher_maxout_layers() -> tuple[ConvLayerSpec, ...]:
             padding=4,
             pool_shape=(4, 4),
             pool_stride=(2, 2),
+            lr_scale=1.0,
             max_kernel_norm=0.9,
         ),
         ConvLayerSpec(
@@ -417,6 +420,7 @@ def _cifar_teacher_maxout_layers() -> tuple[ConvLayerSpec, ...]:
             padding=3,
             pool_shape=(4, 4),
             pool_stride=(2, 2),
+            lr_scale=1.0,
             max_kernel_norm=1.9365,
         ),
         ConvLayerSpec(
@@ -426,6 +430,7 @@ def _cifar_teacher_maxout_layers() -> tuple[ConvLayerSpec, ...]:
             padding=3,
             pool_shape=(2, 2),
             pool_stride=(2, 2),
+            lr_scale=1.0,
             max_kernel_norm=1.9365,
         ),
     )

@@ -25,6 +25,7 @@ First train a CIFAR-100 teacher:
 python train_teacher_torch.py \
   --dataset cifar100 \
   --download \
+  --whiten \
   --output checkpoints/cifar100_teacher.pt \
   --epochs 288 \
   --batch-size 128 \
@@ -61,9 +62,10 @@ The PyTorch flow implements the projected-logit design:
   4x4/4x4/2x2 pooling, max-kernel-norm 0.9/1.9365/1.9365), a 500-unit / 5-piece
   maxout fully connected layer, and a softmax. The hint index defaults to teacher
   layer `1` (the middle conv), matching the original `hints: [[10, 1]]`. The
-  teacher trains with RMSprop (lr 0.005, alpha 0.9, eps 1e-5), per-conv
-  `W_lr_scale=0.05`, max-norm constraints, and no L2 weight decay, mirroring the
-  pylearn2 FitNet recipe.
+  teacher trains with RMSprop (effective convolution and classifier lr 0.005,
+  alpha 0.9, eps 1e-5), gradient clipping, max-norm constraints, and no L2
+  weight decay. The student's original per-conv `W_lr_scale=0.05` is not applied
+  to the separately pretrained teacher.
 - Stage 0 freezes the teacher backbone and trains `teacher_proj`, a bias-free
   `1x1` projection plus global average pooling from teacher middle features to
   class logits, using true-label CE.
