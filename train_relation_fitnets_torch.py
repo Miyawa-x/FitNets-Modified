@@ -77,6 +77,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kd-epochs", type=int, default=288)
     parser.add_argument("--distance-weight", type=float, default=1.0)
     parser.add_argument("--similarity-weight", type=float, default=1.0)
+    parser.add_argument("--energy-weight", type=float, default=0.1)
     parser.add_argument("--lr-relation-front", type=float, default=0.005)
     parser.add_argument("--lr-kd", type=float, default=0.005)
     parser.add_argument("--kd-front-lr-scale", type=float, default=1.0)
@@ -182,12 +183,13 @@ def main() -> None:
     args = parse_args()
     if args.batch_size < 2:
         raise ValueError("--batch-size must be at least 2 for relational losses")
-    if args.distance_weight < 0 or args.similarity_weight < 0:
+    if min(args.distance_weight, args.similarity_weight, args.energy_weight) < 0:
         raise ValueError("relation loss weights must be non-negative")
     if (
         args.relation_epochs > 0
         and args.distance_weight == 0
         and args.similarity_weight == 0
+        and args.energy_weight == 0
     ):
         raise ValueError("at least one relation loss weight must be positive")
     set_seed(args.seed)
@@ -262,7 +264,7 @@ def main() -> None:
         "student_mid_index": student_mid_index,
         "num_classes": dataset_info.num_classes,
         "method": "relation_fitnets",
-        "relation": "normalized_distance_plus_cosine_similarity",
+        "relation": "distance_plus_centered_cosine_plus_log_rms_energy",
     }
     run_config = vars(args).copy()
     run_config.update(metadata)
@@ -298,6 +300,7 @@ def main() -> None:
                 student_mid_index,
                 args.distance_weight,
                 args.similarity_weight,
+                args.energy_weight,
                 args.amp,
                 scaler,
                 grad_clip,
@@ -312,12 +315,14 @@ def main() -> None:
                 student_mid_index,
                 args.distance_weight,
                 args.similarity_weight,
+                args.energy_weight,
                 args.amp,
             )
             print(
                 f"relation epoch {epoch:03d} train: loss={train_stats.loss:.6f} "
                 f"distance={train_stats.distance:.6f} "
                 f"similarity={train_stats.similarity:.6f} "
+                f"energy={train_stats.energy:.6f} "
                 f"student_rms={train_stats.student_feature_rms:.6e} "
                 f"teacher_rms={train_stats.teacher_feature_rms:.6e}"
             )
@@ -325,6 +330,7 @@ def main() -> None:
                 f"relation epoch {epoch:03d} eval:  loss={eval_stats.loss:.6f} "
                 f"distance={eval_stats.distance:.6f} "
                 f"similarity={eval_stats.similarity:.6f} "
+                f"energy={eval_stats.energy:.6f} "
                 f"student_rms={eval_stats.student_feature_rms:.6e} "
                 f"teacher_rms={eval_stats.teacher_feature_rms:.6e}"
             )
@@ -338,6 +344,7 @@ def main() -> None:
                     eval_relation_loss=eval_stats.loss,
                     eval_distance_loss=eval_stats.distance,
                     eval_similarity_loss=eval_stats.similarity,
+                    eval_energy_loss=eval_stats.energy,
                 )
         load_module(
             student,

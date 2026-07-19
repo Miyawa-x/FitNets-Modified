@@ -4,7 +4,11 @@ import unittest
 
 import torch
 
-from torch_fitnets.losses import relation_distance_loss, relation_similarity_loss
+from torch_fitnets.losses import (
+    feature_energy_loss,
+    relation_distance_loss,
+    relation_similarity_loss,
+)
 
 
 class RelationLossTest(unittest.TestCase):
@@ -26,12 +30,22 @@ class RelationLossTest(unittest.TestCase):
 
         loss = relation_distance_loss(student, teacher)
         loss = loss + relation_similarity_loss(student, teacher)
+        loss = loss + feature_energy_loss(student, teacher)
         loss.backward()
 
         self.assertIsNotNone(student.grad)
         self.assertTrue(bool(torch.isfinite(student.grad).all()))
         self.assertGreater(float(student.grad.abs().sum()), 0.0)
         self.assertIsNone(teacher.grad)
+
+    def test_energy_loss_detects_feature_scale_mismatch(self) -> None:
+        teacher = torch.ones(3, 4)
+        student = teacher * 0.01
+        matched = feature_energy_loss(teacher.clone(), teacher)
+        mismatched = feature_energy_loss(student, teacher)
+
+        self.assertLess(float(matched), 1e-8)
+        self.assertGreater(float(mismatched), 1.0)
 
 
 if __name__ == "__main__":

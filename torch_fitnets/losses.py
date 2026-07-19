@@ -78,6 +78,19 @@ def relation_similarity_loss(
     )
 
 
+def feature_energy_loss(
+    student_feature: torch.Tensor,
+    teacher_feature: torch.Tensor,
+    eps: float = 1e-12,
+) -> torch.Tensor:
+    """Anchor relation learning with per-sample log-RMS feature energy."""
+    student = student_feature.flatten(1).float()
+    teacher = teacher_feature.detach().flatten(1).float()
+    student_log_rms = 0.5 * torch.log(student.pow(2).mean(dim=1) + eps)
+    teacher_log_rms = 0.5 * torch.log(teacher.pow(2).mean(dim=1) + eps)
+    return F.smooth_l1_loss(student_log_rms, teacher_log_rms)
+
+
 def logits_entropy(logits: torch.Tensor) -> torch.Tensor:
     probs = F.softmax(logits, dim=1)
     log_probs = F.log_softmax(logits, dim=1)

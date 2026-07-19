@@ -11,6 +11,7 @@ from torch import nn
 
 from .losses import (
     accuracy,
+    feature_energy_loss,
     hint_mse_loss,
     kd_kl_loss,
     logits_entropy,
@@ -41,6 +42,7 @@ class RelationEpochStats:
     loss: float
     distance: float
     similarity: float
+    energy: float
     student_feature_rms: float
     teacher_feature_rms: float
 
@@ -416,6 +418,7 @@ def run_relation_hint_epoch(
     student_middle_index: int,
     distance_weight: float,
     similarity_weight: float,
+    energy_weight: float,
     amp: bool,
     scaler: torch.cuda.amp.GradScaler | None = None,
     grad_clip: float | None = None,
@@ -427,6 +430,7 @@ def run_relation_hint_epoch(
     loss_meter = Meter()
     distance_meter = Meter()
     similarity_meter = Meter()
+    energy_meter = Meter()
     student_rms_meter = Meter()
     teacher_rms_meter = Meter()
 
@@ -448,7 +452,12 @@ def run_relation_hint_epoch(
 
             distance = relation_distance_loss(student_feature, teacher_feature)
             similarity = relation_similarity_loss(student_feature, teacher_feature)
-            loss = distance_weight * distance + similarity_weight * similarity
+            energy = feature_energy_loss(student_feature, teacher_feature)
+            loss = (
+                distance_weight * distance
+                + similarity_weight * similarity
+                + energy_weight * energy
+            )
 
         if not bool(torch.isfinite(loss)):
             raise FloatingPointError("relation hint loss became non-finite")
@@ -461,6 +470,7 @@ def run_relation_hint_epoch(
         loss_meter.update(float(loss.detach()), batch)
         distance_meter.update(float(distance.detach()), batch)
         similarity_meter.update(float(similarity.detach()), batch)
+        energy_meter.update(float(energy.detach()), batch)
         student_rms_meter.update(
             float(student_feature.detach().float().pow(2).mean().sqrt()),
             batch,
@@ -474,6 +484,7 @@ def run_relation_hint_epoch(
         loss=loss_meter.avg,
         distance=distance_meter.avg,
         similarity=similarity_meter.avg,
+        energy=energy_meter.avg,
         student_feature_rms=student_rms_meter.avg,
         teacher_feature_rms=teacher_rms_meter.avg,
     )
