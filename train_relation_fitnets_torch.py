@@ -317,12 +317,16 @@ def main() -> None:
             print(
                 f"relation epoch {epoch:03d} train: loss={train_stats.loss:.6f} "
                 f"distance={train_stats.distance:.6f} "
-                f"similarity={train_stats.similarity:.6f}"
+                f"similarity={train_stats.similarity:.6f} "
+                f"student_rms={train_stats.student_feature_rms:.6e} "
+                f"teacher_rms={train_stats.teacher_feature_rms:.6e}"
             )
             print(
                 f"relation epoch {epoch:03d} eval:  loss={eval_stats.loss:.6f} "
                 f"distance={eval_stats.distance:.6f} "
-                f"similarity={eval_stats.similarity:.6f}"
+                f"similarity={eval_stats.similarity:.6f} "
+                f"student_rms={eval_stats.student_feature_rms:.6e} "
+                f"teacher_rms={eval_stats.teacher_feature_rms:.6e}"
             )
             if eval_stats.loss < best_loss:
                 best_loss = eval_stats.loss

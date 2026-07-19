@@ -41,6 +41,8 @@ class RelationEpochStats:
     loss: float
     distance: float
     similarity: float
+    student_feature_rms: float
+    teacher_feature_rms: float
 
 
 class Meter:
@@ -425,7 +427,8 @@ def run_relation_hint_epoch(
     loss_meter = Meter()
     distance_meter = Meter()
     similarity_meter = Meter()
-    scaler_enabled = amp and device.type == "cuda"
+    student_rms_meter = Meter()
+    teacher_rms_meter = Meter()
 
     for inputs, _targets in loader:
         inputs = inputs.to(device, non_blocking=True)
@@ -440,10 +443,9 @@ def run_relation_hint_epoch(
 
         grad_context = torch.enable_grad() if training else torch.no_grad()
         with grad_context:
-            with _autocast(scaler_enabled):
-                student_feature = student.forward_until(inputs, student_middle_index)
+            # The deep, tiny-initialized Maxout front underflows in FP16 before h10.
+            student_feature = student.forward_until(inputs, student_middle_index)
 
-            # High-dimensional pairwise geometry is intentionally evaluated in FP32.
             distance = relation_distance_loss(student_feature, teacher_feature)
             similarity = relation_similarity_loss(student_feature, teacher_feature)
             loss = distance_weight * distance + similarity_weight * similarity
@@ -459,11 +461,21 @@ def run_relation_hint_epoch(
         loss_meter.update(float(loss.detach()), batch)
         distance_meter.update(float(distance.detach()), batch)
         similarity_meter.update(float(similarity.detach()), batch)
+        student_rms_meter.update(
+            float(student_feature.detach().float().pow(2).mean().sqrt()),
+            batch,
+        )
+        teacher_rms_meter.update(
+            float(teacher_feature.detach().float().pow(2).mean().sqrt()),
+            batch,
+        )
 
     return RelationEpochStats(
         loss=loss_meter.avg,
         distance=distance_meter.avg,
         similarity=similarity_meter.avg,
+        student_feature_rms=student_rms_meter.avg,
+        teacher_feature_rms=teacher_rms_meter.avg,
     )
 
 

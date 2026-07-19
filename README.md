@@ -128,7 +128,9 @@ Stage 1 flattens each model's native middle feature and matches normalized
 pairwise distances plus centered cosine-similarity matrices across the batch.
 Teacher and student feature dimensions may differ because both relation
 matrices are `batch_size x batch_size`. Stage 2 is the same final CE + KD
-training used by the baseline.
+training used by the baseline. Stage 1 feature extraction and relation losses
+run in FP32 even when `--amp` is enabled, avoiding underflow in the deep Maxout
+student front; AMP remains active for Stage 2.
 
 ```
 python train_relation_fitnets_torch.py \
