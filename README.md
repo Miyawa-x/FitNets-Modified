@@ -28,6 +28,7 @@ python train_teacher_torch.py \
   --whiten \
   --output checkpoints/cifar100_teacher.pt \
   --epochs 288 \
+  --milestones 150 225 \
   --batch-size 128 \
   --num-workers 4 \
   --device cuda \
@@ -68,10 +69,11 @@ The PyTorch flow implements the projected-logit design:
   maxout fully connected layer, and a softmax. The hint index defaults to teacher
   layer `1` (the middle conv), matching the original `hints: [[10, 1]]`. The
   teacher trains with RMSprop (base lr 0.005, per-conv `W_lr_scale=0.05`, alpha
-  0.9, eps 1e-5), gradient clipping, max-norm constraints, and no L2 weight
-  decay. The effective convolution learning rate is 0.00025, preventing the
-  unnormalized Maxout stack from saturating its max-norm bounds on the first
-  updates.
+  0.9, eps 1e-5), input/hidden dropout probabilities 0.2/0.5, gradient
+  clipping, max-norm constraints, and no L2 weight decay. The effective
+  convolution learning rate starts at 0.00025 and decays by 0.1 at epochs 150
+  and 225, preventing the unnormalized Maxout stack from saturating its
+  max-norm bounds while improving late-training convergence.
 - Stage 0 freezes the teacher backbone and trains `teacher_proj`, a bias-free
   `1x1` projection plus global average pooling from teacher middle features to
   class logits, using true-label CE.

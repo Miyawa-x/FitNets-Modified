@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 import torch.nn.functional as F
@@ -97,6 +97,8 @@ class ModelSpec:
     default_middle: int
     fc_units: int | None = None
     fc_pieces: int = 5
+    input_dropout: float = 0.0
+    hidden_dropout: float = 0.0
 
 
 class FitNetCNN(nn.Module):
@@ -113,6 +115,9 @@ class FitNetCNN(nn.Module):
         super().__init__()
         self.spec = spec
         self.feature_channels = [layer.num_channels for layer in spec.conv_layers]
+        self.input_dropout = nn.Dropout(spec.input_dropout)
+        self.hidden_dropout = nn.Dropout(spec.hidden_dropout)
+        self.fc_dropout = nn.Dropout(spec.hidden_dropout)
 
         blocks: list[nn.Module] = []
         prev = input_channels
@@ -157,10 +162,12 @@ class FitNetCNN(nn.Module):
         return_feature_index: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         middle = None
+        x = self.input_dropout(x)
         for idx, block in enumerate(self.blocks):
             x = block(x)
             if idx == return_feature_index:
                 middle = x
+            x = self.hidden_dropout(x)
         return x, middle
 
     def _infer_flat_dim(self, input_channels: int, image_size: int) -> int:
@@ -172,11 +179,20 @@ class FitNetCNN(nn.Module):
     def forward_until(self, x: torch.Tensor, layer_index: int) -> torch.Tensor:
         if layer_index < 0 or layer_index >= len(self.blocks):
             raise IndexError(f"middle layer index {layer_index} is out of range")
+        x = self.input_dropout(x)
         for idx, block in enumerate(self.blocks):
             x = block(x)
             if idx == layer_index:
                 return x
+            x = self.hidden_dropout(x)
         raise RuntimeError("unreachable layer index")
+
+    def _classify(self, features: torch.Tensor) -> torch.Tensor:
+        flattened = features.flatten(1)
+        if isinstance(self.classifier, nn.Sequential):
+            hidden = self.classifier[0](flattened)
+            return self.classifier[1](self.fc_dropout(hidden))
+        return self.classifier(flattened)
 
     def forward(
         self,
@@ -184,7 +200,7 @@ class FitNetCNN(nn.Module):
         return_feature_index: int | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         features, middle = self._forward_blocks(x, return_feature_index)
-        logits = self.classifier(features.flatten(1))
+        logits = self._classify(features)
         if return_feature_index is None:
             return logits
         if middle is None:
@@ -467,6 +483,8 @@ CIFAR_TEACHER_MAXOUT = ModelSpec(
     default_middle=1,
     fc_units=500,
     fc_pieces=5,
+    input_dropout=0.2,
+    hidden_dropout=0.5,
 )
 
 MNIST_STUDENT_6 = ModelSpec(
@@ -498,6 +516,8 @@ def build_model(
     input_channels: int,
     num_classes: int,
     image_size: int,
+    input_dropout: float | None = None,
+    hidden_dropout: float | None = None,
 ) -> FitNetCNN:
     try:
         spec = MODEL_SPECS[arch]
@@ -505,6 +525,16 @@ def build_model(
         spec = None
 
     if spec is not None:
+        if input_dropout is not None or hidden_dropout is not None:
+            spec = replace(
+                spec,
+                input_dropout=(
+                    spec.input_dropout if input_dropout is None else input_dropout
+                ),
+                hidden_dropout=(
+                    spec.hidden_dropout if hidden_dropout is None else hidden_dropout
+                ),
+            )
         return FitNetCNN(
             input_channels=input_channels,
             image_size=image_size,

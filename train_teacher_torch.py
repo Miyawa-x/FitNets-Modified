@@ -63,8 +63,20 @@ def parse_args() -> argparse.Namespace:
     # The FitNets/Maxout teacher relies on max-norm constraints rather than L2
     # weight decay, so the default is 0 to stay aligned with the original recipe.
     parser.add_argument("--weight-decay", type=float, default=0.0)
-    parser.add_argument("--milestones", type=int, nargs="*", default=[])
+    parser.add_argument("--milestones", type=int, nargs="*", default=[150, 225])
     parser.add_argument("--gamma", type=float, default=0.1)
+    parser.add_argument(
+        "--input-dropout",
+        type=float,
+        default=None,
+        help="Override the architecture input dropout probability.",
+    )
+    parser.add_argument(
+        "--hidden-dropout",
+        type=float,
+        default=None,
+        help="Override the architecture hidden-layer dropout probability.",
+    )
     parser.add_argument("--amp", action="store_true")
     parser.add_argument(
         "--grad-clip",
@@ -206,6 +218,10 @@ def load_checkpoint(path: str | Path, device: torch.device) -> dict[str, Any]:
 
 def main() -> None:
     args = parse_args()
+    for name in ("input_dropout", "hidden_dropout"):
+        value = getattr(args, name)
+        if value is not None and not 0.0 <= value < 1.0:
+            raise ValueError(f"--{name.replace('_', '-')} must be in [0, 1)")
     set_seed(args.seed)
 
     device = resolve_device(args.device)
@@ -226,6 +242,8 @@ def main() -> None:
         input_channels=dataset_info.input_channels,
         num_classes=dataset_info.num_classes,
         image_size=dataset_info.image_size,
+        input_dropout=args.input_dropout,
+        hidden_dropout=args.hidden_dropout,
     ).to(device)
 
     optimizer = build_optimizer(
@@ -253,6 +271,8 @@ def main() -> None:
             "arch": arch,
             "num_classes": dataset_info.num_classes,
             "input_channels": dataset_info.input_channels,
+            "input_dropout": model.spec.input_dropout,
+            "hidden_dropout": model.spec.hidden_dropout,
         }
     )
     config_path.parent.mkdir(parents=True, exist_ok=True)
