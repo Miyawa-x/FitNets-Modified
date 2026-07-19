@@ -535,6 +535,45 @@ def default_middle_index(arch: str) -> int:
     raise ValueError(f"Unknown model arch '{arch}'. Known: {known}")
 
 
+@torch.no_grad()
+def initialize_fitnet_tail_for_stage2(
+    model: nn.Module,
+    middle_index: int,
+) -> None:
+    """Variance-preserving initialization for the still-untrained student tail."""
+    if not hasattr(model, "blocks") or not hasattr(model, "classifier"):
+        raise TypeError("stage-2 tail initialization requires a FitNetCNN student")
+
+    for block in model.blocks[middle_index + 1 :]:
+        for module in block.modules():
+            if isinstance(module, nn.Conv2d):
+                nn.init.kaiming_normal_(
+                    module.weight,
+                    mode="fan_in",
+                    nonlinearity="relu",
+                )
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+
+    linear_layers = [
+        module for module in model.classifier.modules() if isinstance(module, nn.Linear)
+    ]
+    for module in linear_layers[:-1]:
+        nn.init.kaiming_normal_(
+            module.weight,
+            mode="fan_in",
+            nonlinearity="relu",
+        )
+        if module.bias is not None:
+            nn.init.zeros_(module.bias)
+    if linear_layers:
+        nn.init.xavier_uniform_(linear_layers[-1].weight)
+        if linear_layers[-1].bias is not None:
+            nn.init.zeros_(linear_layers[-1].bias)
+
+    apply_fitnet_constraints(model)
+
+
 def _renorm_rows_(weight: torch.Tensor, max_norm: float) -> None:
     rows = weight.view(weight.shape[0], -1)
     norms = rows.norm(p=2, dim=1, keepdim=True).clamp_min(1e-12)

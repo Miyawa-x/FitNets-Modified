@@ -26,7 +26,11 @@ from torch_fitnets.engine import (
     set_student_stage1_trainable,
     unfreeze,
 )
-from torch_fitnets.models import build_model, default_middle_index
+from torch_fitnets.models import (
+    build_model,
+    default_middle_index,
+    initialize_fitnet_tail_for_stage2,
+)
 from torch_fitnets.optim import build_optimizer, scaled_param_groups
 
 
@@ -81,6 +85,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr-relation-front", type=float, default=0.005)
     parser.add_argument("--lr-kd", type=float, default=0.005)
     parser.add_argument("--kd-front-lr-scale", type=float, default=1.0)
+    parser.add_argument(
+        "--stage2-tail-init",
+        default="fitnet",
+        choices=["fitnet", "kaiming"],
+        help="Initialization for the untrained student tail at the Stage 2 boundary.",
+    )
     parser.add_argument("--optimizer", default="rmsprop", choices=["rmsprop", "sgd"])
     parser.add_argument("--rmsprop-alpha", type=float, default=0.9)
     parser.add_argument("--rmsprop-eps", type=float, default=1e-5)
@@ -356,6 +366,9 @@ def main() -> None:
 
     freeze(teacher)
     unfreeze(student)
+    if args.kd_epochs > 0 and args.stage2_tail_init == "kaiming":
+        initialize_fitnet_tail_for_stage2(student, student_mid_index)
+        print("Stage 2: initialized the untrained student tail with Kaiming weights")
 
     if args.kd_epochs > 0:
         print("Stage 2 (KD): train full student with CE + teacher final-logit KD")

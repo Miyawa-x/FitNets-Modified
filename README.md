@@ -132,6 +132,10 @@ training used by the baseline. A small parameter-free log-RMS feature-energy
 loss anchors the absolute student feature scale that normalized relational
 losses intentionally discard. Stage 1 feature extraction and relation losses
 run in FP32 even when `--amp` is enabled; AMP remains active for Stage 2.
+The optional `--stage2-tail-init kaiming` initializes only the still-untrained
+tail at the stage boundary, preventing six tiny-initialized Maxout layers from
+attenuating the guided feature. The same option is available in the original
+FitNets baseline for controlled comparisons.
 
 ```
 python train_relation_fitnets_torch.py \
@@ -140,6 +144,7 @@ python train_relation_fitnets_torch.py \
   --output-dir runs/cifar100_relation_fitnets \
   --relation-epochs 40 --kd-epochs 288 \
   --distance-weight 1 --similarity-weight 1 --energy-weight 0.1 \
+  --stage2-tail-init kaiming \
   --device cuda --amp
 ```
 
