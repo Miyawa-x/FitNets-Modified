@@ -19,17 +19,50 @@ def kd_kl_loss(
     )
 
 
+def legacy_kd_cross_entropy_loss(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    temperature: float,
+) -> torch.Tensor:
+    """Soft-target cross entropy used by the repository's legacy KDCost."""
+    teacher_probabilities = F.softmax(teacher_logits / temperature, dim=1)
+    student_log_probabilities = F.log_softmax(student_logits / temperature, dim=1)
+    return -(teacher_probabilities * student_log_probabilities).sum(dim=1).mean()
+
+
+def fitnet_teacher_weight(
+    epoch: int,
+    initial_weight: float,
+    final_weight: float = 1.0,
+    start: int = 5,
+    saturate: int = 400,
+) -> float:
+    """Reproduce TeacherDecayOverEpoch using one-based training epochs."""
+    if saturate <= start:
+        raise ValueError("teacher-weight saturation epoch must exceed start")
+    count = epoch - 1
+    if count < start:
+        return initial_weight
+    if count >= saturate:
+        return final_weight
+    step = (initial_weight - final_weight) / (saturate - start + 1)
+    return max(final_weight, initial_weight - step * (count - start + 1))
+
+
 def hint_mse_loss(
     student_hint: torch.Tensor,
     teacher_hint: torch.Tensor,
+    reduction: str = "full",
 ) -> torch.Tensor:
-    """Original FitNets hint objective: 0.5 * ||teacher - student||^2.
-
-    The squared error is summed over the feature dimensions and averaged over
-    the batch, matching ``HintCost`` from the legacy pylearn2 implementation.
-    """
+    """FitNets hint MSE with full-tensor or source-compatible reduction."""
     diff = student_hint - teacher_hint
-    return 0.5 * diff.pow(2).flatten(1).sum(dim=1).mean()
+    if reduction == "full":
+        return 0.5 * diff.pow(2).flatten(1).sum(dim=1).mean()
+    if reduction == "legacy_c01b":
+        # Legacy tensors were C01B and HintCost summed axis 1, then averaged.
+        # NCHW axis 2 is the corresponding first spatial dimension.
+        return 0.5 * diff.pow(2).sum(dim=2).mean()
+    raise ValueError(f"unknown hint MSE reduction: {reduction}")
 
 
 def _off_diagonal_mask(batch_size: int, device: torch.device) -> torch.Tensor:

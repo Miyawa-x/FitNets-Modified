@@ -14,6 +14,7 @@ from .losses import (
     feature_energy_loss,
     hint_mse_loss,
     kd_kl_loss,
+    legacy_kd_cross_entropy_loss,
     logits_entropy,
     logits_std,
     relation_distance_loss,
@@ -294,6 +295,7 @@ def run_stage2_epoch(
     amp: bool,
     scaler: torch.cuda.amp.GradScaler | None = None,
     grad_clip: float | None = None,
+    kd_loss_mode: str = "modern",
 ) -> EpochStats:
     training = optimizer is not None
     teacher.eval()
@@ -319,11 +321,20 @@ def run_stage2_epoch(
             student_logits = student(inputs)
             ce_loss = F.cross_entropy(student_logits, targets)
             if teacher_logits is not None:
-                kd_loss_value = kd_kl_loss(
-                    student_logits,
-                    teacher_logits,
-                    temperature=temperature,
-                )
+                if kd_loss_mode == "modern":
+                    kd_loss_value = kd_kl_loss(
+                        student_logits,
+                        teacher_logits,
+                        temperature=temperature,
+                    )
+                elif kd_loss_mode == "legacy":
+                    kd_loss_value = legacy_kd_cross_entropy_loss(
+                        student_logits,
+                        teacher_logits,
+                        temperature=temperature,
+                    )
+                else:
+                    raise ValueError(f"unknown KD loss mode: {kd_loss_mode}")
                 loss = ce_weight * ce_loss + kd_weight * kd_loss_value
             else:
                 kd_loss_value = None
@@ -374,6 +385,7 @@ def run_fitnet_hint_epoch(
     amp: bool,
     scaler: torch.cuda.amp.GradScaler | None = None,
     grad_clip: float | None = None,
+    hint_loss_reduction: str = "full",
 ) -> HintEpochStats:
     """Original FitNets Stage 1: regress student guided features onto teacher hints."""
     training = optimizer is not None
@@ -396,7 +408,11 @@ def run_fitnet_hint_epoch(
         with grad_context, _autocast(scaler_enabled):
             student_feat = student.forward_until(inputs, student_middle_index)
             student_hint = regressor(student_feat)
-            loss = hint_mse_loss(student_hint, teacher_hint)
+            loss = hint_mse_loss(
+                student_hint,
+                teacher_hint,
+                reduction=hint_loss_reduction,
+            )
 
         if training:
             _backward_step(loss, optimizer, scaler, grad_clip)

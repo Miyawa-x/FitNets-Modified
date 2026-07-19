@@ -20,10 +20,15 @@ class ConvHintRegressor(nn.Module):
         teacher_channels: int,
         student_hw: tuple[int, int],
         teacher_hw: tuple[int, int],
+        num_pieces: int = 2,
         irange: float = 0.05,
         max_kernel_norm: float = 0.9,
     ) -> None:
         super().__init__()
+        if num_pieces < 1:
+            raise ValueError("num_pieces must be positive")
+        self.teacher_channels = teacher_channels
+        self.num_pieces = num_pieces
         kh = student_hw[0] - teacher_hw[0] + 1
         kw = student_hw[1] - teacher_hw[1] + 1
         if kh < 1 or kw < 1:
@@ -35,7 +40,7 @@ class ConvHintRegressor(nn.Module):
             )
         self.conv = nn.Conv2d(
             student_channels,
-            teacher_channels,
+            teacher_channels * num_pieces,
             kernel_size=(kh, kw),
             bias=True,
         )
@@ -45,4 +50,13 @@ class ConvHintRegressor(nn.Module):
         self.conv.fitnet_max_kernel_norm = max_kernel_norm
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
-        return self.conv(features)
+        outputs = self.conv(features)
+        batch, _, height, width = outputs.shape
+        outputs = outputs.view(
+            batch,
+            self.teacher_channels,
+            self.num_pieces,
+            height,
+            width,
+        )
+        return outputs.max(dim=2).values

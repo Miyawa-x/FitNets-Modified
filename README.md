@@ -114,10 +114,33 @@ can be compared head-to-head with the projected-logit variant:
 
 ```
 python train_fitnets_baseline_torch.py \
-  --dataset cifar100 --download \
+  --dataset cifar100 --download --whiten \
   --teacher-ckpt checkpoints/cifar100_teacher.pt \
   --output-dir runs/cifar100_fitnets_baseline \
-  --hint-epochs 40 --kd-epochs 288 --device cuda --amp
+  --hint-epochs 40 --kd-epochs 288 --device cuda \
+  --grad-clip 0
+```
+
+The baseline defaults reproduce the source implementation where practical: a
+Maxout convolutional hint regressor, the C01B `HintCost` reduction, soft-target
+cross entropy without `T^2`, teacher weight decay from 4 toward 1, and the YAML
+tail initialization. Such runs are tagged `legacy_source_compatible` in
+`run_config.json`; the unavailable original teacher checkpoint still prevents
+claiming bit-for-bit reproduction.
+
+For a controlled comparison that isolates only the Stage 1 guidance method,
+run both baselines with the same stabilized Stage 2. The Original-controlled
+side uses:
+
+```
+python train_fitnets_baseline_torch.py \
+  --dataset cifar100 --download --whiten \
+  --teacher-ckpt checkpoints/cifar100_teacher.pt \
+  --output-dir runs/cifar100_fitnets_controlled \
+  --hint-epochs 40 --kd-epochs 288 \
+  --stage2-tail-init kaiming \
+  --kd-loss-mode modern --kd-weight-schedule fixed \
+  --device cuda
 ```
 
 Relation FitNets (heterogeneous features)

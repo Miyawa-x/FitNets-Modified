@@ -5,9 +5,9 @@ feature map with an MSE loss (via a convolutional regressor).
 Stage 2 (KD): train the full student with cross-entropy + knowledge distillation
 from the teacher's final logits.
 
-This is the comparison baseline for the projected-logit variant implemented in
-``train_projected_logits_torch.py``. Both share the same teacher, student
-backbone, data pipeline, and KD stage so the only difference is the hint stage.
+The defaults follow the legacy source where practical. Explicit modern KD and
+Kaiming-tail options provide a controlled baseline whose Stage 2 can be shared
+with newer hint methods.
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ from torch_fitnets.models import (
     default_middle_index,
     initialize_fitnet_tail_for_stage2,
 )
+from torch_fitnets.losses import fitnet_teacher_weight
 from torch_fitnets.optim import build_optimizer, scaled_param_groups
 from torch_fitnets.regressors import ConvHintRegressor
 
@@ -84,6 +85,11 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--hint-epochs", type=int, default=40)
     parser.add_argument("--kd-epochs", type=int, default=288)
+    parser.add_argument(
+        "--hint-loss-reduction",
+        default="legacy_c01b",
+        choices=["legacy_c01b", "full"],
+    )
 
     parser.add_argument("--lr-hint-front", type=float, default=0.005)
     parser.add_argument("--lr-hint-reg", type=float, default=0.005)
@@ -105,6 +111,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kd-temperature", type=float, default=3.0)
     parser.add_argument("--kd-ce-weight", type=float, default=1.0)
     parser.add_argument("--kd-kd-weight", type=float, default=4.0)
+    parser.add_argument(
+        "--kd-loss-mode",
+        default="legacy",
+        choices=["legacy", "modern"],
+    )
+    parser.add_argument(
+        "--kd-weight-schedule",
+        default="fitnets",
+        choices=["fitnets", "fixed"],
+    )
+    parser.add_argument("--kd-final-weight", type=float, default=1.0)
+    parser.add_argument("--kd-decay-start", type=int, default=5)
+    parser.add_argument("--kd-decay-saturate", type=int, default=400)
 
     return parser.parse_args()
 
@@ -185,16 +204,20 @@ def save_checkpoint(path: Path, **payload: Any) -> None:
     torch.save(payload, path)
 
 
-def print_kd_stats(epoch: int, split: str, stats: Any) -> None:
+def print_kd_stats(epoch: int, split: str, stats: Any, kd_weight: float) -> None:
     print(
         f"kd epoch {epoch:03d} {split}: "
         f"loss={stats.loss:.4f} ce={stats.ce:.4f} kd={stats.kd:.4f} "
-        f"acc={stats.acc:.4f} entropy={stats.entropy:.4f} logit_std={stats.logit_std:.4f}"
+        f"acc={stats.acc:.4f} entropy={stats.entropy:.4f} "
+        f"logit_std={stats.logit_std:.4f} kd_weight={kd_weight:.4f}"
     )
 
 
 def main() -> None:
     args = parse_args()
+    if args.kd_weight_schedule == "fitnets":
+        if args.kd_decay_saturate <= args.kd_decay_start:
+            raise ValueError("--kd-decay-saturate must exceed --kd-decay-start")
     set_seed(args.seed)
 
     device = resolve_device(args.device)
@@ -267,6 +290,7 @@ def main() -> None:
         teacher_channels=teacher_c,
         student_hw=(student_h, student_w),
         teacher_hw=(teacher_h, teacher_w),
+        num_pieces=getattr(teacher.blocks[teacher_mid_index], "num_pieces", 1),
     ).to(device)
 
     metadata = {
@@ -279,6 +303,23 @@ def main() -> None:
         "student_guided_shape": [student_c, student_h, student_w],
         "num_classes": dataset_info.num_classes,
         "method": "fitnets_baseline",
+        "baseline_variant": (
+            "legacy_source_compatible"
+            if args.hint_loss_reduction == "legacy_c01b"
+            and args.kd_loss_mode == "legacy"
+            and args.kd_weight_schedule == "fitnets"
+            and args.stage2_tail_init == "fitnet"
+            and args.grad_clip == 0
+            and not args.amp
+            and args.optimizer == "rmsprop"
+            and args.lr_hint_front == 0.005
+            and args.lr_hint_reg == 0.005
+            and args.lr_kd == 0.005
+            and args.weight_decay == 0
+            and args.batch_size == 128
+            and args.whiten
+            else "controlled"
+        ),
     }
     run_config = vars(args).copy()
     run_config.update(metadata)
@@ -317,10 +358,12 @@ def main() -> None:
             train_stats = run_fitnet_hint_epoch(
                 teacher, student, regressor, train_loader, optimizer, device,
                 teacher_mid_index, student_mid_index, args.amp, scaler, grad_clip,
+                args.hint_loss_reduction,
             )
             eval_stats = run_fitnet_hint_epoch(
                 teacher, student, regressor, eval_loader, None, device,
-                teacher_mid_index, student_mid_index, args.amp,
+                teacher_mid_index, student_mid_index, args.amp, None, None,
+                args.hint_loss_reduction,
             )
             print(f"stage1 epoch {epoch:03d} train: hint_mse={train_stats.loss:.4f}")
             print(f"stage1 epoch {epoch:03d} eval:  hint_mse={eval_stats.loss:.4f}")
@@ -374,16 +417,27 @@ def main() -> None:
         )
         best_acc = -1.0
         for epoch in range(1, args.kd_epochs + 1):
+            kd_weight = args.kd_kd_weight
+            if args.kd_weight_schedule == "fitnets":
+                kd_weight = fitnet_teacher_weight(
+                    epoch,
+                    initial_weight=args.kd_kd_weight,
+                    final_weight=args.kd_final_weight,
+                    start=args.kd_decay_start,
+                    saturate=args.kd_decay_saturate,
+                )
             train_stats = run_stage2_epoch(
                 teacher, student, train_loader, optimizer, device,
-                args.kd_temperature, args.kd_ce_weight, args.kd_kd_weight, args.amp, scaler, grad_clip,
+                args.kd_temperature, args.kd_ce_weight, kd_weight, args.amp,
+                scaler, grad_clip, args.kd_loss_mode,
             )
             eval_stats = run_stage2_epoch(
                 teacher, student, eval_loader, None, device,
-                args.kd_temperature, args.kd_ce_weight, args.kd_kd_weight, args.amp,
+                args.kd_temperature, args.kd_ce_weight, kd_weight, args.amp,
+                None, None, args.kd_loss_mode,
             )
-            print_kd_stats(epoch, "train", train_stats)
-            print_kd_stats(epoch, "eval", eval_stats)
+            print_kd_stats(epoch, "train", train_stats, kd_weight)
+            print_kd_stats(epoch, "eval", eval_stats, kd_weight)
             if eval_stats.acc > best_acc:
                 best_acc = eval_stats.acc
                 save_checkpoint(

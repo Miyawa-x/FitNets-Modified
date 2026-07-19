@@ -31,6 +31,7 @@ from torch_fitnets.models import (
     default_middle_index,
     initialize_fitnet_tail_for_stage2,
 )
+from torch_fitnets.losses import fitnet_teacher_weight
 from torch_fitnets.optim import build_optimizer, scaled_param_groups
 
 
@@ -100,6 +101,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kd-temperature", type=float, default=3.0)
     parser.add_argument("--kd-ce-weight", type=float, default=1.0)
     parser.add_argument("--kd-kd-weight", type=float, default=4.0)
+    parser.add_argument(
+        "--kd-loss-mode",
+        default="modern",
+        choices=["legacy", "modern"],
+    )
+    parser.add_argument(
+        "--kd-weight-schedule",
+        default="fixed",
+        choices=["fitnets", "fixed"],
+    )
+    parser.add_argument("--kd-final-weight", type=float, default=1.0)
+    parser.add_argument("--kd-decay-start", type=int, default=5)
+    parser.add_argument("--kd-decay-saturate", type=int, default=400)
     return parser.parse_args()
 
 
@@ -180,12 +194,12 @@ def save_checkpoint(path: Path, **payload: Any) -> None:
     torch.save(payload, path)
 
 
-def print_kd_stats(epoch: int, split: str, stats: Any) -> None:
+def print_kd_stats(epoch: int, split: str, stats: Any, kd_weight: float) -> None:
     print(
         f"kd epoch {epoch:03d} {split}: "
         f"loss={stats.loss:.4f} ce={stats.ce:.4f} kd={stats.kd:.4f} "
         f"acc={stats.acc:.4f} entropy={stats.entropy:.4f} "
-        f"logit_std={stats.logit_std:.4f}"
+        f"logit_std={stats.logit_std:.4f} kd_weight={kd_weight:.4f}"
     )
 
 
@@ -202,6 +216,11 @@ def main() -> None:
         and args.energy_weight == 0
     ):
         raise ValueError("at least one relation loss weight must be positive")
+    if (
+        args.kd_weight_schedule == "fitnets"
+        and args.kd_decay_saturate <= args.kd_decay_start
+    ):
+        raise ValueError("--kd-decay-saturate must exceed --kd-decay-start")
     set_seed(args.seed)
 
     device = resolve_device(args.device)
@@ -395,6 +414,15 @@ def main() -> None:
         )
         best_acc = -1.0
         for epoch in range(1, args.kd_epochs + 1):
+            kd_weight = args.kd_kd_weight
+            if args.kd_weight_schedule == "fitnets":
+                kd_weight = fitnet_teacher_weight(
+                    epoch,
+                    initial_weight=args.kd_kd_weight,
+                    final_weight=args.kd_final_weight,
+                    start=args.kd_decay_start,
+                    saturate=args.kd_decay_saturate,
+                )
             train_stats = run_stage2_epoch(
                 teacher,
                 student,
@@ -403,10 +431,11 @@ def main() -> None:
                 device,
                 args.kd_temperature,
                 args.kd_ce_weight,
-                args.kd_kd_weight,
+                kd_weight,
                 args.amp,
                 scaler,
                 grad_clip,
+                args.kd_loss_mode,
             )
             eval_stats = run_stage2_epoch(
                 teacher,
@@ -416,11 +445,14 @@ def main() -> None:
                 device,
                 args.kd_temperature,
                 args.kd_ce_weight,
-                args.kd_kd_weight,
+                kd_weight,
                 args.amp,
+                None,
+                None,
+                args.kd_loss_mode,
             )
-            print_kd_stats(epoch, "train", train_stats)
-            print_kd_stats(epoch, "eval", eval_stats)
+            print_kd_stats(epoch, "train", train_stats, kd_weight)
+            print_kd_stats(epoch, "eval", eval_stats, kd_weight)
             if eval_stats.acc > best_acc:
                 best_acc = eval_stats.acc
                 save_checkpoint(
