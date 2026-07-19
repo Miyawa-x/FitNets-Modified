@@ -199,5 +199,25 @@ It is configurable via environment variables (`DATASET`, `WHITEN`, `AMP`,
 teacher training if the checkpoint already exists, so re-runs only redo the
 students.
 
+Plotting experiment logs
+------------------------
+
+After the Original-controlled and Relation runs finish, aggregate one or more
+seeds directly from their logs:
+
+```
+python scripts/plot_experiments.py \
+  --teacher-log runs/new_teacher_train.log \
+  --run Original:1337=runs/original_seed1337.log \
+  --run Relation:1337=runs/relation_seed1337.log \
+  --output-dir figures/cifar100
+```
+
+Repeat `--run` with another seed to add a run to the method mean and standard
+deviation. The script produces KD accuracy curves, log-scale Stage 1 loss
+curves, a best-accuracy comparison, `summary.csv`, and threshold epochs for
+20/30/40 percent accuracy. A run path may also point to a directory containing
+one or more `.log` files.
+
 Install PyTorch and torchvision with the CUDA build that matches your NVIDIA
 driver from https://pytorch.org/get-started/locally/.
